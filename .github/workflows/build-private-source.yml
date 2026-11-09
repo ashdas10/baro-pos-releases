@@ -1,0 +1,963 @@
+name: Build Baro POS Android Release APK
+# Production release v1.4.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Exact 40-character commit SHA from the private BARO POS repository"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baro-pos-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Validate private source commit SHA
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be an exact 40-character lowercase commit SHA."
+            exit 1
+          fi
+      - name: Check out private BARO POS source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ashdas10/baro-pos
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.BARO_SOURCE_READ_TOKEN }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Install web dependencies
+        run: npm ci
+      - name: Validate native Android injection scripts
+        run: python3 -m py_compile scripts/inject-android-upi-notifications.py scripts/inject-android-section-security-and-notifications.py
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
+      - name: Run transaction regression tests
+        run: npm test
+      - name: Type-check TypeScript
+        run: npx tsc --noEmit
+      - name: Build web assets
+        run: npm run build
+
+  android-validation:
+    needs: validate
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Validate private source commit SHA
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be an exact 40-character lowercase commit SHA."
+            exit 1
+          fi
+      - name: Check out private BARO POS source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ashdas10/baro-pos
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.BARO_SOURCE_READ_TOKEN }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run transaction regression tests
+        run: npm test
+      - name: Type-check TypeScript
+        run: npx tsc --noEmit
+      - name: Build web assets
+        run: npm run build
+      - name: Create Android platform
+        run: npx cap add android
+      - name: Generate app icons
+        run: |
+          mkdir -p assets
+          node --input-type=module -e "import sharp from 'sharp'; await sharp('public/cc-icon.svg').resize(1024,1024).png().toFile('assets/icon-only.png'); await sharp({create:{width:2732,height:2732,channels:4,background:'#062E24'}}).composite([{input:await sharp('public/cc-icon.svg').resize(900,900).png().toBuffer(),gravity:'centre'}]).png().toFile('assets/splash.png')"
+          npx capacitor-assets generate --android --iconBackgroundColor '#062E24' --splashBackgroundColor '#062E24'
+      - name: Sync Capacitor Android 8
+        run: npx cap sync android
+      - name: Add native in-app APK updater
+        run: |
+          mkdir -p android/app/src/main/java/com/baro/pos android/app/src/main/res/xml
+          cat > android/app/src/main/java/com/baro/pos/ApkUpdaterPlugin.java <<'JAVA'
+          package com.baro.pos;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.provider.Settings;
+          import androidx.core.content.FileProvider;
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import org.json.JSONObject;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.security.MessageDigest;
+          @CapacitorPlugin(name = "ApkUpdater")
+          public class ApkUpdaterPlugin extends Plugin {
+            private static final String MANIFEST = "https://github.com/ashdas10/baro-pos-releases/releases/latest/download/latest.json";
+            private static final String APK_PREFIX = "https://github.com/ashdas10/baro-pos-releases/releases/download/";
+            private static final String APK_LATEST_PREFIX = "https://github.com/ashdas10/baro-pos-releases/releases/latest/download/";
+            private static final int MAX_APK_BYTES = 200 * 1024 * 1024;
+
+            private static boolean isTrustedReleaseHost(Uri uri) {
+              String host = uri.getHost();
+              return "https".equalsIgnoreCase(uri.getScheme()) && host != null &&
+                  (host.equalsIgnoreCase("github.com") ||
+                   host.equalsIgnoreCase("release-assets.githubusercontent.com") ||
+                   host.equalsIgnoreCase("objects.githubusercontent.com")) &&
+                  uri.getUserInfo() == null;
+            }
+
+            private HttpURLConnection openTrustedConnection(String address, String accept, int connectTimeout, int readTimeout) throws Exception {
+              URL current = new URL(address);
+              for (int redirects = 0; redirects <= 5; redirects++) {
+                Uri uri = Uri.parse(current.toString());
+                if (!isTrustedReleaseHost(uri)) throw new java.io.IOException("UPDATE_REDIRECT_REJECTED");
+                HttpURLConnection next = (HttpURLConnection) current.openConnection();
+                next.setConnectTimeout(connectTimeout);
+                next.setReadTimeout(readTimeout);
+                next.setInstanceFollowRedirects(false);
+                next.setRequestProperty("Accept", accept);
+                int status = next.getResponseCode();
+                if (status >= 300 && status < 400) {
+                  String location = next.getHeaderField("Location");
+                  next.disconnect();
+                  if (location == null || location.trim().isEmpty()) throw new java.io.IOException("UPDATE_REDIRECT_MISSING_LOCATION");
+                  current = new URL(current, location);
+                  continue;
+                }
+                return next;
+              }
+              throw new java.io.IOException("UPDATE_REDIRECT_LIMIT");
+            }
+
+            @PluginMethod public void checkForUpdate(PluginCall call) {
+              new Thread(() -> {
+                HttpURLConnection connection = null;
+                try {
+                  connection = openTrustedConnection(MANIFEST, "application/json", 15000, 15000);
+                  int status = connection.getResponseCode();
+                  if (status != HttpURLConnection.HTTP_OK) {
+                    throw new java.io.IOException("UPDATE_CHECK_HTTP_" + status);
+                  }
+                  Uri finalUri = Uri.parse(connection.getURL().toString());
+                  String finalHost = finalUri.getHost();
+                  if (!"https".equals(finalUri.getScheme()) || finalHost == null ||
+                      !(finalHost.equalsIgnoreCase("github.com") ||
+                        finalHost.equalsIgnoreCase("release-assets.githubusercontent.com") ||
+                        finalHost.equalsIgnoreCase("objects.githubusercontent.com"))) {
+                    throw new java.io.IOException("UPDATE_REDIRECT_REJECTED");
+                  }
+                  try (InputStream input = connection.getInputStream();
+                       java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+                    byte[] buffer = new byte[4096];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                      if (output.size() + count > 1024 * 1024) throw new java.io.IOException("UPDATE_MANIFEST_TOO_LARGE");
+                      output.write(buffer, 0, count);
+                    }
+                    JSONObject manifest = new JSONObject(output.toString("UTF-8"));
+                    String version = manifest.optString("version", "");
+                    String url = manifest.optString("apkUrl", "");
+                    String checksum = manifest.optString("sha256", "");
+                    if (version.isEmpty() || (!url.startsWith(APK_PREFIX) && !url.startsWith(APK_LATEST_PREFIX)) || !checksum.matches("(?i)[0-9a-f]{64}")) {
+                      throw new java.io.IOException("UPDATE_MANIFEST_INVALID");
+                    }
+                    JSObject result = new JSObject();
+                    result.put("update", manifest);
+                    call.resolve(result);
+                  }
+                } catch (Exception error) {
+                  call.reject("UPDATE_CHECK_FAILED: " + error.getMessage(), error);
+                } finally {
+                  if (connection != null) connection.disconnect();
+                }
+              }).start();
+            }
+
+            @PluginMethod public void openInstallPermissionSettings(PluginCall call) {
+              if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+                  getContext().getPackageManager().canRequestPackageInstalls()) {
+                JSObject result = new JSObject();
+                result.put("permissionGranted", true);
+                call.resolve(result);
+                return;
+              }
+              getActivity().runOnUiThread(() -> {
+                try {
+                  Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                      Uri.parse("package:" + getContext().getPackageName()));
+                  settings.addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY);
+                  getActivity().startActivity(settings);
+                  JSObject result = new JSObject();
+                  result.put("permissionGranted", false);
+                  result.put("settingsOpened", true);
+                  call.resolve(result);
+                } catch (Exception error) {
+                  call.reject("PERMISSION_SETTINGS_FAILED: " + error.getClass().getSimpleName() + ": " + error.getMessage(), error);
+                }
+              });
+            }
+
+            @PluginMethod public void installUpdate(PluginCall call) {
+              String url = call.getString("url");
+              String expected = call.getString("sha256");
+              if (url == null || expected == null || !expected.matches("(?i)[0-9a-f]{64}")) {
+                call.reject("UPDATE_INPUT_INVALID: Missing APK URL or SHA-256 checksum");
+                return;
+              }
+              Uri source = Uri.parse(url);
+              if (!"https".equals(source.getScheme()) ||
+                  !"github.com".equalsIgnoreCase(source.getHost()) ||
+                  source.getUserInfo() != null ||
+                  source.getQuery() != null ||
+                  source.getPath() == null ||
+                  !(source.getPath().startsWith("/ashdas10/baro-pos-releases/releases/download/") ||
+                    source.getPath().startsWith("/ashdas10/baro-pos-releases/releases/latest/download/"))) {
+                call.reject("UPDATE_URL_REJECTED: APK URL is not an approved Baro POS release");
+                return;
+              }
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                  !getContext().getPackageManager().canRequestPackageInstalls()) {
+                call.reject("INSTALL_PERMISSION_MISSING: Allow Baro POS to install unknown apps, return here, then tap Download & update again");
+                return;
+              }
+
+              new Thread(() -> {
+                HttpURLConnection connection = null;
+                File temporary = new File(getContext().getCacheDir(), "baro-pos-update.apk.part");
+                File apk = new File(getContext().getCacheDir(), "baro-pos-update.apk");
+                try {
+                  temporary.delete();
+                  connection = openTrustedConnection(url, "application/vnd.android.package-archive, application/octet-stream", 20000, 45000);
+                  int status = connection.getResponseCode();
+                  if (status != HttpURLConnection.HTTP_OK) throw new java.io.IOException("APK_DOWNLOAD_HTTP_" + status);
+                  Uri finalUri = Uri.parse(connection.getURL().toString());
+                  String finalHost = finalUri.getHost();
+                  if (!"https".equals(finalUri.getScheme()) || finalHost == null ||
+                      !(finalHost.equalsIgnoreCase("github.com") ||
+                        finalHost.equalsIgnoreCase("release-assets.githubusercontent.com") ||
+                        finalHost.equalsIgnoreCase("objects.githubusercontent.com"))) {
+                    throw new java.io.IOException("APK_REDIRECT_REJECTED");
+                  }
+                  String contentType = connection.getContentType();
+                  if (connection.getContentLengthLong() > MAX_APK_BYTES) throw new java.io.IOException("APK_FILE_TOO_LARGE");
+                  MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                  long total = 0;
+                  try (InputStream input = connection.getInputStream();
+                       FileOutputStream output = new FileOutputStream(temporary)) {
+                    byte[] buffer = new byte[16384];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                      total += count;
+                      if (total > MAX_APK_BYTES) throw new java.io.IOException("APK_FILE_TOO_LARGE");
+                      digest.update(buffer, 0, count);
+                      output.write(buffer, 0, count);
+                    }
+                    output.flush();
+                    output.getFD().sync();
+                  }
+                  if (total < 1024 * 1024) throw new java.io.IOException("APK_DOWNLOAD_TOO_SMALL");
+                  StringBuilder actual = new StringBuilder();
+                  for (byte value : digest.digest()) actual.append(String.format(java.util.Locale.US, "%02x", value));
+                  if (!actual.toString().equalsIgnoreCase(expected)) throw new java.io.IOException("APK_CHECKSUM_MISMATCH");
+                  if (apk.exists() && !apk.delete()) throw new java.io.IOException("APK_CACHE_CLEANUP_FAILED");
+                  if (!temporary.renameTo(apk)) throw new java.io.IOException("APK_CACHE_FINALIZE_FAILED");
+
+                  Uri apkUri = FileProvider.getUriForFile(getContext(),
+                      getContext().getPackageName() + ".fileprovider", apk);
+                  Intent install = new Intent(Intent.ACTION_INSTALL_PACKAGE);
+                  install.setData(apkUri);
+                  install.setClipData(android.content.ClipData.newRawUri("Baro POS update", apkUri));
+                  install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                  final long downloadedBytes = total;
+                  getActivity().runOnUiThread(() -> {
+                    try {
+                      getActivity().startActivity(install);
+                      JSObject result = new JSObject();
+                      result.put("installerLaunched", true);
+                      result.put("bytesDownloaded", downloadedBytes);
+                      call.resolve(result);
+                    } catch (Exception error) {
+                      call.reject("INSTALL_LAUNCH_FAILED: " + error.getClass().getSimpleName() + ": " + error.getMessage(), error);
+                    }
+                  });
+                } catch (Exception error) {
+                  temporary.delete();
+                  call.reject("UPDATE_INSTALL_FAILED: " + error.getMessage(), error);
+                } finally {
+                  if (connection != null) connection.disconnect();
+                }
+              }).start();
+            }
+          }
+          JAVA
+          cat > android/app/src/main/res/xml/baro_file_paths.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths xmlns:android="http://schemas.android.com/apk/res/android"><cache-path name="updates" path="." /></paths>
+          XML
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          p=Path("android/app/src/main/AndroidManifest.xml")
+          s=p.read_text()
+          if "REQUEST_INSTALL_PACKAGES" not in s:
+              s=s.replace("<application", '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n    <application', 1)
+          provider='''        <provider android:name="androidx.core.content.FileProvider" android:authorities="APP_ID.fileprovider" android:exported="false" android:grantUriPermissions="true"><meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/baro_file_paths" /></provider>'''.replace("APP_ID.fileprovider", "$"+"{applicationId}.fileprovider")
+          if "androidx.core.content.FileProvider" not in s: s=s.replace("</application>",provider+"\n    </application>",1)
+          p.write_text(s)
+          main=Path("android/app/src/main/java/com/baro/pos/MainActivity.java")
+          if not main.exists():
+              main.write_text("package com.baro.pos;\nimport com.getcapacitor.BridgeActivity;\nimport android.os.Bundle;\npublic class MainActivity extends BridgeActivity { @Override public void onCreate(Bundle savedInstanceState) { registerPlugin(ApkUpdaterPlugin.class); super.onCreate(savedInstanceState); } }\n")
+          else:
+              s=main.read_text()
+              if "ApkUpdaterPlugin" not in s:
+                  if "import com.getcapacitor.BridgeActivity;" in s: s=s.replace("import com.getcapacitor.BridgeActivity;","import com.getcapacitor.BridgeActivity;\nimport com.baro.pos.ApkUpdaterPlugin;")
+                  s=re.sub(r"public class MainActivity extends BridgeActivity \{", "public class MainActivity extends BridgeActivity { @Override public void onCreate(android.os.Bundle savedInstanceState) { registerPlugin(ApkUpdaterPlugin.class); super.onCreate(savedInstanceState); }", s, count=1)
+                  main.write_text(s)
+          PY
+      - name: Inject same-device UPI notification listener
+        run: python3 scripts/inject-android-upi-notifications.py
+      - name: Inject Android section security and native local notifications
+        run: python3 scripts/inject-android-section-security-and-notifications.py
+      - name: Increase Gradle distribution download timeout
+        run: |
+          WRAPPER=android/gradle/wrapper/gradle-wrapper.properties
+          sed -i 's#services.gradle.org#downloads.gradle.org#g' "$WRAPPER"
+          if grep -q '^networkTimeout=' "$WRAPPER"; then
+            sed -i 's/^networkTimeout=.*/networkTimeout=120000/' "$WRAPPER"
+          else
+            printf '\nnetworkTimeout=120000\n' >> "$WRAPPER"
+          fi
+      - name: Assemble unsigned Android debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+      - name: Verify debug APK exists
+        run: test -s android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Create debug APK checksum
+        run: sha256sum android/app/build/outputs/apk/debug/app-debug.apk > android/app/build/outputs/apk/debug/app-debug.apk.sha256
+      - name: Upload unsigned Android debug APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: baro-pos-android-debug-${{ github.sha }}
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/debug/app-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  build-apk:
+    needs: validate
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    environment:
+      name: android-release
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Validate private source commit SHA
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be an exact 40-character lowercase commit SHA."
+            exit 1
+          fi
+      - name: Check out private BARO POS source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ashdas10/baro-pos
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.BARO_SOURCE_READ_TOKEN }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: package-lock.json
+      - name: Install web dependencies
+        run: npm ci
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
+      - name: Run transaction regression tests
+        run: npm test
+      - name: Type-check TypeScript
+        run: npx tsc --noEmit
+      - name: Build web assets
+        run: npm run build
+      - name: Create Android platform
+        run: npx cap add android
+      - name: Generate app icons
+        run: |
+          mkdir -p assets
+          node --input-type=module -e "import sharp from 'sharp'; await sharp('public/cc-icon.svg').resize(1024,1024).png().toFile('assets/icon-only.png'); await sharp({create:{width:2732,height:2732,channels:4,background:'#062E24'}}).composite([{input:await sharp('public/cc-icon.svg').resize(900,900).png().toBuffer(),gravity:'centre'}]).png().toFile('assets/splash.png')"
+          npx capacitor-assets generate --android --iconBackgroundColor '#062E24' --splashBackgroundColor '#062E24'
+      - name: Sync packaged app
+        run: npx cap sync android
+      - name: Add native in-app APK updater
+        run: |
+          mkdir -p android/app/src/main/java/com/baro/pos android/app/src/main/res/xml
+          cat > android/app/src/main/java/com/baro/pos/ApkUpdaterPlugin.java <<'JAVA'
+          package com.baro.pos;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.provider.Settings;
+          import androidx.core.content.FileProvider;
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import org.json.JSONObject;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.security.MessageDigest;
+          @CapacitorPlugin(name = "ApkUpdater")
+          public class ApkUpdaterPlugin extends Plugin {
+            private static final String MANIFEST = "https://github.com/ashdas10/baro-pos-releases/releases/latest/download/latest.json";
+            private static final String APK_PREFIX = "https://github.com/ashdas10/baro-pos-releases/releases/download/";
+            private static final String APK_LATEST_PREFIX = "https://github.com/ashdas10/baro-pos-releases/releases/latest/download/";
+            private static final int MAX_APK_BYTES = 200 * 1024 * 1024;
+
+            private static boolean isTrustedReleaseHost(Uri uri) {
+              String host = uri.getHost();
+              return "https".equalsIgnoreCase(uri.getScheme()) && host != null &&
+                  (host.equalsIgnoreCase("github.com") ||
+                   host.equalsIgnoreCase("release-assets.githubusercontent.com") ||
+                   host.equalsIgnoreCase("objects.githubusercontent.com")) &&
+                  uri.getUserInfo() == null;
+            }
+
+            private HttpURLConnection openTrustedConnection(String address, String accept, int connectTimeout, int readTimeout) throws Exception {
+              URL current = new URL(address);
+              for (int redirects = 0; redirects <= 5; redirects++) {
+                Uri uri = Uri.parse(current.toString());
+                if (!isTrustedReleaseHost(uri)) throw new java.io.IOException("UPDATE_REDIRECT_REJECTED");
+                HttpURLConnection next = (HttpURLConnection) current.openConnection();
+                next.setConnectTimeout(connectTimeout);
+                next.setReadTimeout(readTimeout);
+                next.setInstanceFollowRedirects(false);
+                next.setRequestProperty("Accept", accept);
+                int status = next.getResponseCode();
+                if (status >= 300 && status < 400) {
+                  String location = next.getHeaderField("Location");
+                  next.disconnect();
+                  if (location == null || location.trim().isEmpty()) throw new java.io.IOException("UPDATE_REDIRECT_MISSING_LOCATION");
+                  current = new URL(current, location);
+                  continue;
+                }
+                return next;
+              }
+              throw new java.io.IOException("UPDATE_REDIRECT_LIMIT");
+            }
+
+            @PluginMethod public void checkForUpdate(PluginCall call) {
+              new Thread(() -> {
+                HttpURLConnection connection = null;
+                try {
+                  connection = openTrustedConnection(MANIFEST, "application/json", 15000, 15000);
+                  int status = connection.getResponseCode();
+                  if (status != HttpURLConnection.HTTP_OK) {
+                    throw new java.io.IOException("UPDATE_CHECK_HTTP_" + status);
+                  }
+                  Uri finalUri = Uri.parse(connection.getURL().toString());
+                  String finalHost = finalUri.getHost();
+                  if (!"https".equals(finalUri.getScheme()) || finalHost == null ||
+                      !(finalHost.equalsIgnoreCase("github.com") ||
+                        finalHost.equalsIgnoreCase("release-assets.githubusercontent.com") ||
+                        finalHost.equalsIgnoreCase("objects.githubusercontent.com"))) {
+                    throw new java.io.IOException("UPDATE_REDIRECT_REJECTED");
+                  }
+                  try (InputStream input = connection.getInputStream();
+                       java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+                    byte[] buffer = new byte[4096];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                      if (output.size() + count > 1024 * 1024) throw new java.io.IOException("UPDATE_MANIFEST_TOO_LARGE");
+                      output.write(buffer, 0, count);
+                    }
+                    JSONObject manifest = new JSONObject(output.toString("UTF-8"));
+                    String version = manifest.optString("version", "");
+                    String url = manifest.optString("apkUrl", "");
+                    String checksum = manifest.optString("sha256", "");
+                    if (version.isEmpty() || (!url.startsWith(APK_PREFIX) && !url.startsWith(APK_LATEST_PREFIX)) || !checksum.matches("(?i)[0-9a-f]{64}")) {
+                      throw new java.io.IOException("UPDATE_MANIFEST_INVALID");
+                    }
+                    JSObject result = new JSObject();
+                    result.put("update", manifest);
+                    call.resolve(result);
+                  }
+                } catch (Exception error) {
+                  call.reject("UPDATE_CHECK_FAILED: " + error.getMessage(), error);
+                } finally {
+                  if (connection != null) connection.disconnect();
+                }
+              }).start();
+            }
+
+            @PluginMethod public void openInstallPermissionSettings(PluginCall call) {
+              if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+                  getContext().getPackageManager().canRequestPackageInstalls()) {
+                JSObject result = new JSObject();
+                result.put("permissionGranted", true);
+                call.resolve(result);
+                return;
+              }
+              getActivity().runOnUiThread(() -> {
+                try {
+                  Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                      Uri.parse("package:" + getContext().getPackageName()));
+                  settings.addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY);
+                  getActivity().startActivity(settings);
+                  JSObject result = new JSObject();
+                  result.put("permissionGranted", false);
+                  result.put("settingsOpened", true);
+                  call.resolve(result);
+                } catch (Exception error) {
+                  call.reject("PERMISSION_SETTINGS_FAILED: " + error.getClass().getSimpleName() + ": " + error.getMessage(), error);
+                }
+              });
+            }
+
+            @PluginMethod public void installUpdate(PluginCall call) {
+              String url = call.getString("url");
+              String expected = call.getString("sha256");
+              if (url == null || expected == null || !expected.matches("(?i)[0-9a-f]{64}")) {
+                call.reject("UPDATE_INPUT_INVALID: Missing APK URL or SHA-256 checksum");
+                return;
+              }
+              Uri source = Uri.parse(url);
+              if (!"https".equals(source.getScheme()) ||
+                  !"github.com".equalsIgnoreCase(source.getHost()) ||
+                  source.getUserInfo() != null ||
+                  source.getQuery() != null ||
+                  source.getPath() == null ||
+                  !(source.getPath().startsWith("/ashdas10/baro-pos-releases/releases/download/") ||
+                    source.getPath().startsWith("/ashdas10/baro-pos-releases/releases/latest/download/"))) {
+                call.reject("UPDATE_URL_REJECTED: APK URL is not an approved Baro POS release");
+                return;
+              }
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                  !getContext().getPackageManager().canRequestPackageInstalls()) {
+                call.reject("INSTALL_PERMISSION_MISSING: Allow Baro POS to install unknown apps, return here, then tap Download & update again");
+                return;
+              }
+
+              new Thread(() -> {
+                HttpURLConnection connection = null;
+                File temporary = new File(getContext().getCacheDir(), "baro-pos-update.apk.part");
+                File apk = new File(getContext().getCacheDir(), "baro-pos-update.apk");
+                try {
+                  temporary.delete();
+                  connection = openTrustedConnection(url, "application/vnd.android.package-archive, application/octet-stream", 20000, 45000);
+                  int status = connection.getResponseCode();
+                  if (status != HttpURLConnection.HTTP_OK) throw new java.io.IOException("APK_DOWNLOAD_HTTP_" + status);
+                  Uri finalUri = Uri.parse(connection.getURL().toString());
+                  String finalHost = finalUri.getHost();
+                  if (!"https".equals(finalUri.getScheme()) || finalHost == null ||
+                      !(finalHost.equalsIgnoreCase("github.com") ||
+                        finalHost.equalsIgnoreCase("release-assets.githubusercontent.com") ||
+                        finalHost.equalsIgnoreCase("objects.githubusercontent.com"))) {
+                    throw new java.io.IOException("APK_REDIRECT_REJECTED");
+                  }
+                  String contentType = connection.getContentType();
+                  if (connection.getContentLengthLong() > MAX_APK_BYTES) throw new java.io.IOException("APK_FILE_TOO_LARGE");
+                  MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                  long total = 0;
+                  try (InputStream input = connection.getInputStream();
+                       FileOutputStream output = new FileOutputStream(temporary)) {
+                    byte[] buffer = new byte[16384];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                      total += count;
+                      if (total > MAX_APK_BYTES) throw new java.io.IOException("APK_FILE_TOO_LARGE");
+                      digest.update(buffer, 0, count);
+                      output.write(buffer, 0, count);
+                    }
+                    output.flush();
+                    output.getFD().sync();
+                  }
+                  if (total < 1024 * 1024) throw new java.io.IOException("APK_DOWNLOAD_TOO_SMALL");
+                  StringBuilder actual = new StringBuilder();
+                  for (byte value : digest.digest()) actual.append(String.format(java.util.Locale.US, "%02x", value));
+                  if (!actual.toString().equalsIgnoreCase(expected)) throw new java.io.IOException("APK_CHECKSUM_MISMATCH");
+                  if (apk.exists() && !apk.delete()) throw new java.io.IOException("APK_CACHE_CLEANUP_FAILED");
+                  if (!temporary.renameTo(apk)) throw new java.io.IOException("APK_CACHE_FINALIZE_FAILED");
+
+                  Uri apkUri = FileProvider.getUriForFile(getContext(),
+                      getContext().getPackageName() + ".fileprovider", apk);
+                  Intent install = new Intent(Intent.ACTION_INSTALL_PACKAGE);
+                  install.setData(apkUri);
+                  install.setClipData(android.content.ClipData.newRawUri("Baro POS update", apkUri));
+                  install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                  final long downloadedBytes = total;
+                  getActivity().runOnUiThread(() -> {
+                    try {
+                      getActivity().startActivity(install);
+                      JSObject result = new JSObject();
+                      result.put("installerLaunched", true);
+                      result.put("bytesDownloaded", downloadedBytes);
+                      call.resolve(result);
+                    } catch (Exception error) {
+                      call.reject("INSTALL_LAUNCH_FAILED: " + error.getClass().getSimpleName() + ": " + error.getMessage(), error);
+                    }
+                  });
+                } catch (Exception error) {
+                  temporary.delete();
+                  call.reject("UPDATE_INSTALL_FAILED: " + error.getMessage(), error);
+                } finally {
+                  if (connection != null) connection.disconnect();
+                }
+              }).start();
+            }
+          }
+          JAVA
+          cat > android/app/src/main/res/xml/baro_file_paths.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths xmlns:android="http://schemas.android.com/apk/res/android"><cache-path name="updates" path="." /></paths>
+          XML
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          p=Path("android/app/src/main/AndroidManifest.xml")
+          s=p.read_text()
+          if "REQUEST_INSTALL_PACKAGES" not in s:
+              s=s.replace("<application", '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n    <application', 1)
+          provider='''        <provider android:name="androidx.core.content.FileProvider" android:authorities="APP_ID.fileprovider" android:exported="false" android:grantUriPermissions="true"><meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/baro_file_paths" /></provider>'''.replace("APP_ID.fileprovider", "$"+"{applicationId}.fileprovider")
+          if "androidx.core.content.FileProvider" not in s: s=s.replace("</application>",provider+"\n    </application>",1)
+          p.write_text(s)
+          main=Path("android/app/src/main/java/com/baro/pos/MainActivity.java")
+          if not main.exists():
+              main.write_text("package com.baro.pos;\nimport com.getcapacitor.BridgeActivity;\nimport android.os.Bundle;\npublic class MainActivity extends BridgeActivity { @Override public void onCreate(Bundle savedInstanceState) { registerPlugin(ApkUpdaterPlugin.class); super.onCreate(savedInstanceState); } }\n")
+          else:
+              s=main.read_text()
+              if "ApkUpdaterPlugin" not in s:
+                  if "import com.getcapacitor.BridgeActivity;" in s: s=s.replace("import com.getcapacitor.BridgeActivity;","import com.getcapacitor.BridgeActivity;\nimport com.baro.pos.ApkUpdaterPlugin;")
+                  s=re.sub(r"public class MainActivity extends BridgeActivity \{", "public class MainActivity extends BridgeActivity { @Override public void onCreate(android.os.Bundle savedInstanceState) { registerPlugin(ApkUpdaterPlugin.class); super.onCreate(savedInstanceState); }", s, count=1)
+                  main.write_text(s)
+          PY
+      - name: Inject same-device UPI notification access into production APK
+        run: python3 scripts/inject-android-upi-notifications.py
+      - name: Inject Android section security and native local notifications into production APK
+        run: python3 scripts/inject-android-section-security-and-notifications.py
+      - name: Apply Baro POS app branding
+        run: |
+          sed -i 's/<string name="app_name">[^<]*<\/string>/<string name="app_name">Baro POS<\/string>/' android/app/src/main/res/values/strings.xml || true
+          node --input-type=module <<'NODE'
+          import sharp from 'sharp';
+          import { readdir, writeFile } from 'node:fs/promises';
+          const res = 'android/app/src/main/res';
+          const dirs = (await readdir(res, {withFileTypes:true})).filter(d => d.isDirectory() && /^mipmap-(mdpi|hdpi|xhdpi|xxhdpi|xxxhdpi)$/.test(d.name)).map(d => d.name);
+          const sizes = {mdpi:48,hdpi:72,xhdpi:96,xxhdpi:144,xxxhdpi:192};
+          for (const dir of dirs) {
+            const density = dir.replace('mipmap-','');
+            const size = sizes[density];
+            const png = await sharp('public/cc-icon.svg').resize(size,size).png().toBuffer();
+            await writeFile(`${res}/${dir}/ic_launcher.png`,png);
+            await writeFile(`${res}/${dir}/ic_launcher_round.png`,png);
+            await writeFile(`${res}/${dir}/ic_launcher_foreground.png`,png);
+          }
+          NODE
+      - name: Set app version from package.json
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid package version: $VERSION"
+            exit 1
+          fi
+          APP_VERSION="$(node -e "const fs=require('fs'); const s=fs.readFileSync('src/App.tsx','utf8'); const m=s.match(/const APP_VERSION = '([^']+)'/); if (!m) process.exit(2); console.log(m[1])")"
+          if [[ "$APP_VERSION" != "$VERSION" ]]; then
+            echo "App version $APP_VERSION does not match package version $VERSION"
+            exit 1
+          fi
+          VERSION_CODE="$(node -e "const [a,b,c]=process.argv[1].split('.').map(Number); console.log(a*10000+b*100+c)" "$VERSION")"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match package version v$VERSION"
+            exit 1
+          fi
+          echo "BARO_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "BARO_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          sed -i "s/versionCode [0-9]*/versionCode $VERSION_CODE/" android/app/build.gradle
+          sed -i "s/versionName .*/versionName '$VERSION'/" android/app/build.gradle
+      - name: Restore permanent Android signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/baro-pos-release.jks
+          test -s android/app/baro-pos-release.jks
+      - name: Increase Gradle distribution download timeout
+        run: |
+          WRAPPER=android/gradle/wrapper/gradle-wrapper.properties
+          sed -i 's#services.gradle.org#downloads.gradle.org#g' "$WRAPPER"
+          if grep -q '^networkTimeout=' "$WRAPPER"; then
+            sed -i 's/^networkTimeout=.*/networkTimeout=120000/' "$WRAPPER"
+          else
+            printf '\nnetworkTimeout=120000\n' >> "$WRAPPER"
+          fi
+      - name: Configure release signing
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path("android/app/build.gradle")
+          text = path.read_text()
+          if "signingConfigs {" in text:
+              raise SystemExit("Signing configuration already exists; refusing to duplicate it.")
+          if "android {" not in text or "buildTypes {" not in text:
+              raise SystemExit("Unexpected Gradle file structure; signing configuration was not changed.")
+          text = text.replace("android {", """android {
+              signingConfigs {
+                  release {
+                      storeFile file("baro-pos-release.jks")
+                      storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                      keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+                  }
+              }
+          """, 1)
+          import re
+          marker = "buildTypes {"
+          if marker not in text:
+              raise SystemExit("Gradle buildTypes block not found; signing configuration was not changed.")
+          before, after = text.split(marker, 1)
+          match = re.search(r'(?m)^(\s*)(?:release|getByName\(["\']release["\']\))\s*\{', after)
+          if match:
+              indent = match.group(1)
+              after = after[:match.end()] + "\n" + indent + "    signingConfig signingConfigs.release" + after[match.end():]
+          else:
+              after = "\n    release {\n        signingConfig signingConfigs.release\n    }\n" + after
+          path.write_text(before + marker + after)
+          PY
+      - name: Increase Gradle distribution download timeout
+        run: |
+          WRAPPER=android/gradle/wrapper/gradle-wrapper.properties
+          sed -i 's#services.gradle.org#downloads.gradle.org#g' "$WRAPPER"
+          if grep -q '^networkTimeout=' "$WRAPPER"; then
+            sed -i 's/^networkTimeout=.*/networkTimeout=120000/' "$WRAPPER"
+          else
+            printf '\nnetworkTimeout=120000\n' >> "$WRAPPER"
+          fi
+      - name: Build release-signed APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          cd android
+          ./gradlew assembleRelease
+      - name: Name Baro POS APK
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk "Baro-POS-$BARO_VERSION.apk"
+          cp "Baro-POS-$BARO_VERSION.apk" Baro-POS.apk
+      - name: Verify APK signature
+        run: |
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "Baro-POS-$BARO_VERSION.apk" | tee "Baro-POS-$BARO_VERSION.signer.txt"
+      - name: Capture APK manifest and package inventory
+        run: |
+          AAPT="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          test -n "$AAPT"
+          "$AAPT" dump permissions "Baro-POS-$BARO_VERSION.apk" > "Baro-POS-$BARO_VERSION.permissions.txt"
+          "$AAPT" dump badging "Baro-POS-$BARO_VERSION.apk" > "Baro-POS-$BARO_VERSION.badging.txt"
+          "$AAPT" dump xmltree "Baro-POS-$BARO_VERSION.apk" AndroidManifest.xml > "Baro-POS-$BARO_VERSION.manifest-tree.txt"
+          unzip -Z1 "Baro-POS-$BARO_VERSION.apk" > "Baro-POS-$BARO_VERSION.packaged-files.txt"
+          sha256sum "Baro-POS-$BARO_VERSION.apk" > "Baro-POS-$BARO_VERSION.audit-sha256.txt"
+      - name: Compare public APK signer and manifest baselines
+        run: |
+          AAPT="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          test -n "$AAPT"
+          test -n "$APKSIGNER"
+          for BASE_VERSION in 1.4.0 1.4.1; do
+            BASE_APK="Baro-POS-$BASE_VERSION.baseline.apk"
+            curl --fail --location --retry 3 --silent --show-error \
+              "https://github.com/ashdas10/baro-pos-releases/releases/download/v$BASE_VERSION/Baro-POS-$BASE_VERSION.apk" \
+              --output "$BASE_APK"
+            "$AAPT" dump permissions "$BASE_APK" > "Baro-POS-$BASE_VERSION.baseline.permissions.txt"
+            "$AAPT" dump badging "$BASE_APK" > "Baro-POS-$BASE_VERSION.baseline.badging.txt"
+            "$AAPT" dump xmltree "$BASE_APK" AndroidManifest.xml > "Baro-POS-$BASE_VERSION.baseline.manifest-tree.txt"
+            "$APKSIGNER" verify --verbose --print-certs "$BASE_APK" > "Baro-POS-$BASE_VERSION.baseline.signer.txt"
+            sha256sum "$BASE_APK" > "Baro-POS-$BASE_VERSION.baseline.sha256"
+            BASE_CERT="$(awk -F': ' '/certificate SHA-256 digest:/ {print $2; exit}' "Baro-POS-$BASE_VERSION.baseline.signer.txt")"
+            CURRENT_CERT="$(awk -F': ' '/certificate SHA-256 digest:/ {print $2; exit}' "Baro-POS-$BARO_VERSION.signer.txt")"
+            test -n "$BASE_CERT"
+            test -n "$CURRENT_CERT"
+            if [ "$BASE_CERT" != "$CURRENT_CERT" ]; then
+              echo "Release signing certificate differs from public $BASE_VERSION."
+              exit 1
+            fi
+            diff -u "Baro-POS-$BASE_VERSION.baseline.permissions.txt" "Baro-POS-$BARO_VERSION.permissions.txt" > "Baro-POS-$BASE_VERSION-to-$BARO_VERSION.permissions-diff.txt" || true
+            diff -u "Baro-POS-$BASE_VERSION.baseline.badging.txt" "Baro-POS-$BARO_VERSION.badging.txt" > "Baro-POS-$BASE_VERSION-to-$BARO_VERSION.badging-diff.txt" || true
+            diff -u "Baro-POS-$BASE_VERSION.baseline.manifest-tree.txt" "Baro-POS-$BARO_VERSION.manifest-tree.txt" > "Baro-POS-$BASE_VERSION-to-$BARO_VERSION.manifest-tree-diff.txt" || true
+            diff -u <(unzip -Z1 "$BASE_APK" | sort) <(sort "Baro-POS-$BARO_VERSION.packaged-files.txt") > "Baro-POS-$BASE_VERSION-to-$BARO_VERSION.packaged-files-diff.txt" || true
+            # Compare the actual bytes of executable Android payloads and the
+            # compiled manifest/resources, not merely their ZIP entry names.
+            apk_payload_hashes() {
+              local apk="$1"
+              local output="$2"
+              : > "$output"
+              while IFS= read -r entry; do
+                [ -n "$entry" ] || continue
+                digest="$(unzip -p "$apk" "$entry" | sha256sum | cut -d ' ' -f 1)"
+                printf '%s  %s\n' "$digest" "$entry" >> "$output"
+              done < <(unzip -Z1 "$apk" | grep -E '^(AndroidManifest\.xml|resources\.arsc|classes([0-9]+)?\.dex|lib/[^/]+/[^/]+\.so)$' | sort)
+            }
+            apk_payload_hashes "$BASE_APK" "Baro-POS-$BASE_VERSION.baseline-native-payload-sha256.txt"
+            apk_payload_hashes "Baro-POS-$BARO_VERSION.apk" "Baro-POS-$BARO_VERSION.native-payload-sha256.txt"
+            diff -u "Baro-POS-$BASE_VERSION.baseline-native-payload-sha256.txt" "Baro-POS-$BARO_VERSION.native-payload-sha256.txt" > "Baro-POS-$BASE_VERSION-to-$BARO_VERSION.native-payload-diff.txt" || true
+            rm -f "$BASE_APK"
+          done
+      - name: Create signed APK checksum
+        run: sha256sum "Baro-POS-$BARO_VERSION.apk" > "Baro-POS-$BARO_VERSION.apk.sha256"
+      - name: Upload signed APK artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: baro-pos-android-signed-${{ github.sha }}
+          path: |
+            Baro-POS-*.apk
+            Baro-POS-*.apk.sha256
+            Baro-POS-*.signer.txt
+            Baro-POS-*.permissions.txt
+            Baro-POS-*.badging.txt
+            Baro-POS-*.manifest-tree.txt
+            Baro-POS-*.baseline.manifest-tree.txt
+            Baro-POS-*-to-*.manifest-tree-diff.txt
+            Baro-POS-*.packaged-files.txt
+            Baro-POS-*.audit-sha256.txt
+            Baro-POS-*.baseline.permissions.txt
+            Baro-POS-*.baseline.badging.txt
+            Baro-POS-*.baseline.signer.txt
+            Baro-POS-*.baseline.sha256
+            Baro-POS-*-to-*.permissions-diff.txt
+            Baro-POS-*-to-*.badging-diff.txt
+            Baro-POS-*-to-*.packaged-files-diff.txt
+            Baro-POS-*.native-payload-sha256.txt
+            Baro-POS-*.baseline-native-payload-sha256.txt
+            Baro-POS-*-to-*.native-payload-diff.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Generate update manifest
+        run: |
+          SHA256="$(sha256sum "Baro-POS-$BARO_VERSION.apk" | cut -d ' ' -f 1)"
+          case "$BARO_VERSION" in
+            1.4.2) RELEASE_NOTES="Improved responsive layouts across phones and tablets; POS-only operational navigation with a brand shortcut back to Point of Sale; clearer encrypted backup passphrase and recovery-code guidance; one shared section PIN with independent protection switches; compact Data & app info settings; readable bullet-list update notes." ;;
+            1.4.1) RELEASE_NOTES="Independent Store Open/Closed controls; optional Android Keystore section locks with PIN and biometric fallback; opt-in Finance Vault recovery; encrypted full POS portable backups; CSV, XLSX and PDF exports; light, dark and device themes; redesigned Finance reports; configurable store-aware Android notifications." ;;
+            1.4.0) RELEASE_NOTES="QR-session-scoped same-device UPI evidence with fresh exact-amount matching and cashier-confirmed settlement; dedicated Reports UPI activity review; encrypted Android notification evidence; protected Finance Workspace records and ledger safeguards; reproducible npm installs and dependency security fixes." ;;
+            1.3.13) RELEASE_NOTES="Combined fixed and percentage POS discounts with clear bill breakdown, Bills date filtering, and custom report date ranges. Includes the 1.3.12 Settings and same-device UPI improvements." ;;
+            1.3.12) RELEASE_NOTES="Compact, reordered Settings with clear selected states, cleaner GST controls, and same-device UPI notification access fix. Includes the 1.3.11 billing, receipts, FSSAI, KOT and backup improvements." ;;
+            1.3.11) RELEASE_NOTES="GST-ready billing and invoice settings, FSSAI business identity, improved customer receipts, same-device UPI payment evidence, kitchen KOT workflow, settings improvements, and backup and migration updates. Two-device UPI Connect remains a future update." ;;
+            1.3.9) RELEASE_NOTES="Finance transaction drilldowns and editing, event sales-versus-cost summaries, provisional recorded result, and POS overlap warnings for CSV imports." ;;
+            1.3.8) RELEASE_NOTES="Sales detail popups, clearer finance history, safe legacy classification, scoped finance clearing, and faster navigation to POS." ;;
+            1.3.7) RELEASE_NOTES="Simpler finance CSV imports with clear expense and imported-sales classification, combined sales overview, and safe re-imports." ;;
+            1.3.6) RELEASE_NOTES="Business finance safeguards: ambiguous sales and income stay out of expense totals until classified; full searchable and filterable finance history." ;;
+            1.3.5) RELEASE_NOTES="CSV import fix: preserves rows needing review when categories are not transaction types; handles standard and escaped line endings." ;;
+            1.3.3) RELEASE_NOTES="Finance import/export improvements: highlighted file upload, export dropdown with CSV, JSON, Excel-compatible spreadsheet, and PDF print options; copyable AI finance import prompt." ;;
+            1.3.2) RELEASE_NOTES="Disabled pinch-to-zoom for a steadier phone and tablet POS layout." ;;
+            1.3.1) RELEASE_NOTES="Finance workspace dark-theme polish, improved contrast, mobile-friendly tabs, and detailed update notes." ;;
+            1.3.0) RELEASE_NOTES="Business Finance workspace with investments and funding, expenses and purchases, cash flow and accounts, events and stalls, financial reports, and reviewed CSV/TSV imports with duplicate checks." ;;
+            1.2.22) RELEASE_NOTES="Compact consumable management; clearer reports; improved held-ticket workflow and official update popup." ;;
+            1.2.21) RELEASE_NOTES="Consumable inventory, linked supply deductions on completed sales, stock movements, wastage and adjustments, and consumables backup/restore." ;;
+            1.2.20) RELEASE_NOTES="Day-by-day sales reporting with zero-sales dates; drafts and voided bills excluded from reporting." ;;
+            *) RELEASE_NOTES="Bug fixes, usability improvements, and reliability updates." ;;
+          esac
+          cat > latest.json <<EOF
+          {
+            "version": "$BARO_VERSION",
+            "versionCode": $BARO_VERSION_CODE,
+            "packageName": "com.baro.pos",
+            "apkUrl": "https://github.com/ashdas10/baro-pos-releases/releases/download/v$BARO_VERSION/Baro-POS.apk",
+            "sha256": "$SHA256",
+            "releaseNotes": "$RELEASE_NOTES"
+          }
+          EOF
+      - name: Validate update manifest
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          version = os.environ["BARO_VERSION"]
+          version_code = int(os.environ["BARO_VERSION_CODE"])
+          apk = Path(f"Baro-POS-{version}.apk")
+          manifest_path = Path("latest.json")
+          if not apk.is_file() or apk.stat().st_size < 1024 * 1024:
+              raise SystemExit("Signed APK is missing or unexpectedly small.")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          digest = hashlib.sha256(apk.read_bytes()).hexdigest()
+          expected = {
+              "version": version,
+              "versionCode": version_code,
+              "packageName": "com.baro.pos",
+              "apkUrl": f"https://github.com/ashdas10/baro-pos-releases/releases/download/v{version}/Baro-POS.apk",
+              "sha256": digest,
+          }
+          for key, value in expected.items():
+              if manifest.get(key) != value:
+                  raise SystemExit(f"Update manifest mismatch for {key}.")
+          if not isinstance(manifest.get("releaseNotes"), str) or not manifest["releaseNotes"].strip():
+              raise SystemExit("Update manifest release notes are missing.")
+          print(f"Validated latest.json for Baro POS {version}; APK SHA-256 {digest}.")
+          PY
+      - name: Upload validated update manifest artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: baro-pos-update-manifest-${{ github.sha }}
+          path: latest.json
+          if-no-files-found: error
+          retention-days: 14
