@@ -1,5 +1,5 @@
 name: Build Baro POS Android Release APK
-# Production release v1.4.0
+# Manual signed-APK release pipeline for the private BARO POS source repository.
 
 on:
   workflow_dispatch:
@@ -736,15 +736,6 @@ jobs:
           test -n "$ANDROID_KEYSTORE_BASE64"
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/baro-pos-release.jks
           test -s android/app/baro-pos-release.jks
-      - name: Increase Gradle distribution download timeout
-        run: |
-          WRAPPER=android/gradle/wrapper/gradle-wrapper.properties
-          sed -i 's#services.gradle.org#downloads.gradle.org#g' "$WRAPPER"
-          if grep -q '^networkTimeout=' "$WRAPPER"; then
-            sed -i 's/^networkTimeout=.*/networkTimeout=120000/' "$WRAPPER"
-          else
-            printf '\nnetworkTimeout=120000\n' >> "$WRAPPER"
-          fi
       - name: Configure release signing
         run: |
           python3 <<'PY'
@@ -981,10 +972,10 @@ jobs:
               echo "A published release already exists for $TAG; refusing to overwrite it."
               exit 1
             fi
-            gh release upload "$TAG" Baro-POS.apk latest.json "Baro-POS-$BARO_VERSION.apk.sha256" --clobber
+            gh release upload "$TAG" "Baro-POS-$BARO_VERSION.apk" Baro-POS.apk latest.json "Baro-POS-$BARO_VERSION.apk.sha256" --clobber
             gh release edit "$TAG" --title "BARO POS $BARO_VERSION" --notes-file "$NOTES_FILE"
           else
-            gh release create "$TAG" Baro-POS.apk latest.json "Baro-POS-$BARO_VERSION.apk.sha256" \
+            gh release create "$TAG" "Baro-POS-$BARO_VERSION.apk" Baro-POS.apk latest.json "Baro-POS-$BARO_VERSION.apk.sha256" \
               --draft --title "BARO POS $BARO_VERSION" --notes-file "$NOTES_FILE"
           fi
           rm -f "$NOTES_FILE"
