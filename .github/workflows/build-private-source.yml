@@ -48,7 +48,7 @@ jobs:
       - name: Validate native Android injection scripts
         run: python3 -m py_compile scripts/inject-android-upi-notifications.py scripts/inject-android-section-security-and-notifications.py
       - name: Audit npm dependencies
-        run: npm audit --audit-level=high
+        run: node scripts/audit-dependencies.mjs
       - name: Run transaction regression tests
         run: npm test
       - name: Type-check TypeScript
