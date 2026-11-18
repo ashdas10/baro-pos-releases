@@ -386,12 +386,12 @@ jobs:
           retention-days: 7
 
   build-apk:
-    needs: validate
+    needs: [validate, android-validation]
     if: ${{ github.event_name == 'workflow_dispatch' }}
     environment:
       name: android-release
     permissions:
-      contents: read
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -961,3 +961,30 @@ jobs:
           path: latest.json
           if-no-files-found: error
           retention-days: 14
+      - name: Create draft GitHub release for final review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$BARO_VERSION"
+          NOTES_FILE="$(mktemp)"
+          python - <<'PY' > "$NOTES_FILE"
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path("latest.json").read_text(encoding="utf-8"))
+          print(manifest["releaseNotes"])
+          print()
+          print("This is a draft release pending final device installation and update-path verification.")
+          PY
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
+            if [[ "$IS_DRAFT" != "true" ]]; then
+              echo "A published release already exists for $TAG; refusing to overwrite it."
+              exit 1
+            fi
+            gh release upload "$TAG" Baro-POS.apk latest.json "Baro-POS-$BARO_VERSION.apk.sha256" --clobber
+            gh release edit "$TAG" --title "BARO POS $BARO_VERSION" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" Baro-POS.apk latest.json "Baro-POS-$BARO_VERSION.apk.sha256" \
+              --draft --title "BARO POS $BARO_VERSION" --notes-file "$NOTES_FILE"
+          fi
+          rm -f "$NOTES_FILE"
