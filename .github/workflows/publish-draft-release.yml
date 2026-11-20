@@ -31,14 +31,12 @@ jobs:
             exit 1
           fi
 
-          RELEASE="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"
+          # Locate by tag_name in the releases collection. The draft's GitHub
+          # release record currently has an untagged HTML URL, so the
+          # /releases/tags/{tag} endpoint incorrectly returns 404.
+          RELEASES="$(gh api "repos/$GH_REPO/releases?per_page=100")"
+          RELEASE="$(jq -ce --arg tag "$RELEASE_TAG" '[.[] | select(.tag_name == $tag and .draft == true)] | first' <<< "$RELEASES")"
           RELEASE_ID="$(jq -r '.id' <<< "$RELEASE")"
-          IS_DRAFT="$(jq -r '.draft' <<< "$RELEASE")"
-
-          if [[ "$IS_DRAFT" != "true" ]]; then
-            echo "Release $RELEASE_TAG is not a draft. Nothing was changed."
-            exit 1
-          fi
 
           for REQUIRED_ASSET in "Baro-POS-1.4.2.apk" "Baro-POS-1.4.2.apk.sha256" "Baro-POS.apk" "latest.json"; do
             if ! jq -e --arg name "$REQUIRED_ASSET" '.assets | any(.name == $name)' <<< "$RELEASE" >/dev/null; then
