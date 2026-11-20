@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: "Exact 40-character commit SHA from ash das10/baro-pos"
+        description: "Exact 40-character commit SHA from ashdas10/baro-pos"
         required: true
         type: string
 
