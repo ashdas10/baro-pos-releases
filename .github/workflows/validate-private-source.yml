@@ -1,0 +1,69 @@
+name: BARO POS source validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Exact 40-character commit SHA from ash das10/baro-pos"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baro-pos-validation-${{ inputs.source_sha }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Validate source commit SHA
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be an exact 40-character lowercase commit SHA."
+            exit 1
+          fi
+
+      - name: Check out private BARO POS source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ashdas10/baro-pos
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.BARO_SOURCE_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate Android injection scripts
+        run: python3 -m py_compile scripts/inject-android-upi-notifications.py scripts/inject-android-section-security-and-notifications.py
+
+      - name: Audit npm dependencies
+        run: node scripts/audit-dependencies.mjs
+
+      - name: Run automated tests
+        run: npm test
+
+      - name: Type-check TypeScript
+        run: npx tsc --noEmit
+
+      - name: Build production web assets
+        run: npm run build
+
+      - name: Report validated source revision
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: echo "Validation completed for private source commit $SOURCE_SHA"
