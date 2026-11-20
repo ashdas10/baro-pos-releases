@@ -1,0 +1,64 @@
+name: Publish BARO POS draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish (this workflow is restricted to v1.4.2)"
+        required: true
+        default: "v1.4.2"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Validate and publish the existing draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$RELEASE_TAG" != "v1.4.2" ]]; then
+            echo "This one-time publisher is restricted to v1.4.2."
+            exit 1
+          fi
+
+          RELEASE="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG")"
+          RELEASE_ID="$(jq -r '.id' <<< "$RELEASE")"
+          IS_DRAFT="$(jq -r '.draft' <<< "$RELEASE")"
+
+          if [[ "$IS_DRAFT" != "true" ]]; then
+            echo "Release $RELEASE_TAG is not a draft. Nothing was changed."
+            exit 1
+          fi
+
+          for REQUIRED_ASSET in "Baro-POS-1.4.2.apk" "Baro-POS-1.4.2.apk.sha256" "Baro-POS.apk" "latest.json"; do
+            if ! jq -e --arg name "$REQUIRED_ASSET" '.assets | any(.name == $name)' <<< "$RELEASE" >/dev/null; then
+              echo "Required release asset is missing: $REQUIRED_ASSET"
+              exit 1
+            fi
+          done
+
+          BODY="$(jq -r '.body // ""' <<< "$RELEASE")"
+          BODY="$(printf '%s\n' "$BODY" | sed '/^This is a draft release pending final device installation and update-path verification\.$/d')"
+
+          gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" \
+            -F draft=false \
+            -f body="$BODY" >/dev/null
+
+          PUBLISHED="$(gh api "repos/$GH_REPO/releases/$RELEASE_ID")"
+          if [[ "$(jq -r '.draft' <<< "$PUBLISHED")" != "false" ]]; then
+            echo "GitHub did not confirm publication."
+            exit 1
+          fi
+
+          echo "Published $RELEASE_TAG successfully."
+          jq -r '"Release URL: " + .html_url' <<< "$PUBLISHED"
