@@ -45,8 +45,8 @@ jobs:
           node-version: 24
       - name: Install web dependencies
         run: npm ci
-      - name: Validate native Android injection scripts
-        run: python3 -m py_compile scripts/inject-android-upi-notifications.py scripts/inject-android-section-security-and-notifications.py
+      - name: Validate Android section-security and notification injection script
+        run: python3 -m py_compile scripts/inject-android-section-security-and-notifications.py
       - name: Audit npm dependencies
         run: node scripts/audit-dependencies.mjs
       - name: Run transaction regression tests
@@ -353,8 +353,6 @@ jobs:
                   s=re.sub(r"public class MainActivity extends BridgeActivity \{", "public class MainActivity extends BridgeActivity { @Override public void onCreate(android.os.Bundle savedInstanceState) { registerPlugin(ApkUpdaterPlugin.class); super.onCreate(savedInstanceState); }", s, count=1)
                   main.write_text(s)
           PY
-      - name: Inject same-device UPI notification listener
-        run: python3 scripts/inject-android-upi-notifications.py
       - name: Inject Android section security and native local notifications
         run: python3 scripts/inject-android-section-security-and-notifications.py
       - name: Increase Gradle distribution download timeout
@@ -686,8 +684,6 @@ jobs:
                   s=re.sub(r"public class MainActivity extends BridgeActivity \{", "public class MainActivity extends BridgeActivity { @Override public void onCreate(android.os.Bundle savedInstanceState) { registerPlugin(ApkUpdaterPlugin.class); super.onCreate(savedInstanceState); }", s, count=1)
                   main.write_text(s)
           PY
-      - name: Inject same-device UPI notification access into production APK
-        run: python3 scripts/inject-android-upi-notifications.py
       - name: Inject Android section security and native local notifications into production APK
         run: python3 scripts/inject-android-section-security-and-notifications.py
       - name: Apply Baro POS app branding
@@ -807,6 +803,13 @@ jobs:
           "$AAPT" dump xmltree "Baro-POS-$BARO_VERSION.apk" AndroidManifest.xml > "Baro-POS-$BARO_VERSION.manifest-tree.txt"
           unzip -Z1 "Baro-POS-$BARO_VERSION.apk" > "Baro-POS-$BARO_VERSION.packaged-files.txt"
           sha256sum "Baro-POS-$BARO_VERSION.apk" > "Baro-POS-$BARO_VERSION.audit-sha256.txt"
+      - name: Enforce removal of UPI notification-listener capability
+        run: |
+          if grep -Eiq 'BIND_NOTIFICATION_LISTENER_SERVICE|NotificationListenerService|UpiNotificationListenerService|UpiNotificationAccessPlugin' "Baro-POS-$BARO_VERSION.permissions.txt" "Baro-POS-$BARO_VERSION.manifest-tree.txt" "Baro-POS-$BARO_VERSION.packaged-files.txt"; then
+            echo "Forbidden UPI notification-listener capability or implementation is present in the APK."
+            exit 1
+          fi
+          echo "Verified: APK contains no UPI notification-listener permission, service, plugin or packaged implementation."
       - name: Compare public APK signer and manifest baselines
         run: |
           AAPT="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)"
