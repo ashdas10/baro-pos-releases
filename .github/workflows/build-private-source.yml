@@ -706,17 +706,17 @@ jobs:
           NODE
       - name: Set app version from package.json
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid package version: $VERSION"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          VERSION="$(node -e "const fs=require('fs'); const s=fs.readFileSync('src/App.tsx','utf8'); const m=s.match(/const APP_VERSION = '([^']+)'/); if (!m) process.exit(2); console.log(m[1])")"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "Invalid app version: $VERSION"
             exit 1
           fi
-          APP_VERSION="$(node -e "const fs=require('fs'); const s=fs.readFileSync('src/App.tsx','utf8'); const m=s.match(/const APP_VERSION = '([^']+)'/); if (!m) process.exit(2); console.log(m[1])")"
-          if [[ "$APP_VERSION" != "$VERSION" ]]; then
-            echo "App version $APP_VERSION does not match package version $VERSION"
+          if [[ "$VERSION" != "$PACKAGE_VERSION" && "$VERSION" != "$PACKAGE_VERSION".* ]]; then
+            echo "App version $VERSION must match package version $PACKAGE_VERSION or its patch suffix"
             exit 1
           fi
-          VERSION_CODE="$(node -e "const [a,b,c]=process.argv[1].split('.').map(Number); console.log(a*10000+b*100+c)" "$VERSION")"
+          VERSION_CODE="$(node -e "const [a,b,c,d=0]=process.argv[1].split('.').map(Number); console.log(a*1000000+b*10000+c*100+d)" "$VERSION")"
           if [[ "$GITHUB_REF" == refs/tags/v* && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
             echo "Release tag $GITHUB_REF_NAME does not match package version v$VERSION"
             exit 1
@@ -888,6 +888,7 @@ jobs:
         run: |
           SHA256="$(sha256sum "Baro-POS-$BARO_VERSION.apk" | cut -d ' ' -f 1)"
           case "$BARO_VERSION" in
+            1.4.3.1) RELEASE_NOTES="Android phone portrait system-bar spacing and short-landscape POS checkout layout corrections; distinct patch build identity for device verification." ;;
             1.4.3) RELEASE_NOTES="Responsive POS and app-wide phone/tablet UX improvements; clearer checkout, add-on stock guidance, accessible cart controls, held-ticket and kitchen workflows; improved Menu, Inventory, Sales and Reports controls; removed automatic UPI notification reading and the Reports UPI activity inbox to reduce sensitive Android access; UPI QR generation and manual cashier payment verification remain supported; existing payment records and backup compatibility preserved." ;;
             1.4.2) RELEASE_NOTES="Improved responsive layouts across phones and tablets; POS-only operational navigation with a brand shortcut back to Point of Sale; clearer encrypted backup passphrase and recovery-code guidance; one shared section PIN with independent protection switches; compact Data & app info settings; readable bullet-list update notes." ;;
             1.4.1) RELEASE_NOTES="Independent Store Open/Closed controls; optional Android Keystore section locks with PIN and biometric fallback; opt-in Finance Vault recovery; encrypted full POS portable backups; CSV, XLSX and PDF exports; light, dark and device themes; redesigned Finance reports; configurable store-aware Android notifications." ;;
