@@ -706,14 +706,14 @@ jobs:
           NODE
       - name: Set app version from package.json
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          VERSION="$(node -e "const fs=require('fs'); const s=fs.readFileSync('src/App.tsx','utf8'); const m=s.match(/const APP_VERSION = '([^']+)'/); if (!m) process.exit(2); console.log(m[1])")"
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "Invalid package version: $VERSION"
+            echo "Invalid app version: $VERSION"
             exit 1
           fi
-          APP_VERSION="$(node -e "const fs=require('fs'); const s=fs.readFileSync('src/App.tsx','utf8'); const m=s.match(/const APP_VERSION = '([^']+)'/); if (!m) process.exit(2); console.log(m[1])")"
-          if [[ "$APP_VERSION" != "$VERSION" ]]; then
-            echo "App version $APP_VERSION does not match package version $VERSION"
+          if [[ "$VERSION" != "$PACKAGE_VERSION" && "$VERSION" != "$PACKAGE_VERSION".* ]]; then
+            echo "App version $VERSION must match package version $PACKAGE_VERSION or its patch suffix"
             exit 1
           fi
           VERSION_CODE="$(node -e "const [a,b,c,d=0]=process.argv[1].split('.').map(Number); console.log(a*1000000+b*10000+c*100+d)" "$VERSION")"
