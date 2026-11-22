@@ -861,33 +861,18 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: baro-pos-android-signed-${{ github.sha }}
+          # Keep the downloadable test artifact focused: one installable APK
+          # and its checksum. Audit reports remain available in the job logs.
           path: |
             Baro-POS-*.apk
             Baro-POS-*.apk.sha256
-            Baro-POS-*.signer.txt
-            Baro-POS-*.permissions.txt
-            Baro-POS-*.badging.txt
-            Baro-POS-*.manifest-tree.txt
-            Baro-POS-*.baseline.manifest-tree.txt
-            Baro-POS-*-to-*.manifest-tree-diff.txt
-            Baro-POS-*.packaged-files.txt
-            Baro-POS-*.audit-sha256.txt
-            Baro-POS-*.baseline.permissions.txt
-            Baro-POS-*.baseline.badging.txt
-            Baro-POS-*.baseline.signer.txt
-            Baro-POS-*.baseline.sha256
-            Baro-POS-*-to-*.permissions-diff.txt
-            Baro-POS-*-to-*.badging-diff.txt
-            Baro-POS-*-to-*.packaged-files-diff.txt
-            Baro-POS-*.native-payload-sha256.txt
-            Baro-POS-*.baseline-native-payload-sha256.txt
-            Baro-POS-*-to-*.native-payload-diff.txt
           if-no-files-found: error
           retention-days: 14
       - name: Generate update manifest
         run: |
           SHA256="$(sha256sum "Baro-POS-$BARO_VERSION.apk" | cut -d ' ' -f 1)"
           case "$BARO_VERSION" in
+            1.4.3.3) RELEASE_NOTES="Android system-bar safe-area handling at the native content root; landscape POS checkout scrolling keeps discounts, totals and payment controls reachable." ;;
             1.4.3.1) RELEASE_NOTES="Android phone portrait system-bar spacing and short-landscape POS checkout layout corrections; distinct patch build identity for device verification." ;;
             1.4.3) RELEASE_NOTES="Responsive POS and app-wide phone/tablet UX improvements; clearer checkout, add-on stock guidance, accessible cart controls, held-ticket and kitchen workflows; improved Menu, Inventory, Sales and Reports controls; removed automatic UPI notification reading and the Reports UPI activity inbox to reduce sensitive Android access; UPI QR generation and manual cashier payment verification remain supported; existing payment records and backup compatibility preserved." ;;
             1.4.2) RELEASE_NOTES="Improved responsive layouts across phones and tablets; POS-only operational navigation with a brand shortcut back to Point of Sale; clearer encrypted backup passphrase and recovery-code guidance; one shared section PIN with independent protection switches; compact Data & app info settings; readable bullet-list update notes." ;;
