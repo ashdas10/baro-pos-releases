@@ -889,6 +889,7 @@ jobs:
         run: |
           SHA256="$(sha256sum "Baro-POS-$BARO_VERSION.apk" | cut -d ' ' -f 1)"
           case "$BARO_VERSION" in
+            1.4.4) RELEASE_NOTES="Official BARO brand identity across the app; updated launcher icon and splash branding; dedicated Appearance settings with theme and accent presets; consistent BARO navigation styling; official 58mm and 80mm thermal receipt footer artwork. Merchant identity, POS checkout layout, billing, inventory, finance and backup workflows preserved."
             1.4.3.1) RELEASE_NOTES="Android phone portrait system-bar spacing and short-landscape POS checkout layout corrections; distinct patch build identity for device verification." ;;
             1.4.3) RELEASE_NOTES="Responsive POS and app-wide phone/tablet UX improvements; clearer checkout, add-on stock guidance, accessible cart controls, held-ticket and kitchen workflows; improved Menu, Inventory, Sales and Reports controls; removed automatic UPI notification reading and the Reports UPI activity inbox to reduce sensitive Android access; UPI QR generation and manual cashier payment verification remain supported; existing payment records and backup compatibility preserved." ;;
             1.4.2) RELEASE_NOTES="Improved responsive layouts across phones and tablets; POS-only operational navigation with a brand shortcut back to Point of Sale; clearer encrypted backup passphrase and recovery-code guidance; one shared section PIN with independent protection switches; compact Data & app info settings; readable bullet-list update notes." ;;
