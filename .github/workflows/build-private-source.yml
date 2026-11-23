@@ -103,8 +103,8 @@ jobs:
       - name: Generate app icons
         run: |
           mkdir -p assets
-          node --input-type=module -e "import sharp from 'sharp'; await sharp('public/cc-icon.svg').resize(1024,1024).png().toFile('assets/icon-only.png'); await sharp({create:{width:2732,height:2732,channels:4,background:'#062E24'}}).composite([{input:await sharp('public/cc-icon.svg').resize(900,900).png().toBuffer(),gravity:'centre'}]).png().toFile('assets/splash.png')"
-          npx capacitor-assets generate --android --iconBackgroundColor '#062E24' --splashBackgroundColor '#062E24'
+          node --input-type=module -e "import sharp from 'sharp'; await sharp('public/brand/baro-mark-light.svg').resize(1024,1024).png().toFile('assets/icon-only.png'); await sharp({create:{width:2732,height:2732,channels:4,background:'#14110F'}}).composite([{input:await sharp('public/brand/baro-mark-dark.svg').resize(900,900).png().toBuffer(),gravity:'centre'}]).png().toFile('assets/splash.png')"
+          npx capacitor-assets generate --android --iconBackgroundColor '#FF5B2E' --splashBackgroundColor '#14110F'
       - name: Sync Capacitor Android 8
         run: npx cap sync android
       - name: Add native in-app APK updater
@@ -434,8 +434,8 @@ jobs:
       - name: Generate app icons
         run: |
           mkdir -p assets
-          node --input-type=module -e "import sharp from 'sharp'; await sharp('public/cc-icon.svg').resize(1024,1024).png().toFile('assets/icon-only.png'); await sharp({create:{width:2732,height:2732,channels:4,background:'#062E24'}}).composite([{input:await sharp('public/cc-icon.svg').resize(900,900).png().toBuffer(),gravity:'centre'}]).png().toFile('assets/splash.png')"
-          npx capacitor-assets generate --android --iconBackgroundColor '#062E24' --splashBackgroundColor '#062E24'
+          node --input-type=module -e "import sharp from 'sharp'; await sharp('public/brand/baro-mark-light.svg').resize(1024,1024).png().toFile('assets/icon-only.png'); await sharp({create:{width:2732,height:2732,channels:4,background:'#14110F'}}).composite([{input:await sharp('public/brand/baro-mark-dark.svg').resize(900,900).png().toBuffer(),gravity:'centre'}]).png().toFile('assets/splash.png')"
+          npx capacitor-assets generate --android --iconBackgroundColor '#FF5B2E' --splashBackgroundColor '#14110F'
       - name: Sync packaged app
         run: npx cap sync android
       - name: Add native in-app APK updater
@@ -698,10 +698,11 @@ jobs:
           for (const dir of dirs) {
             const density = dir.replace('mipmap-','');
             const size = sizes[density];
-            const png = await sharp('public/cc-icon.svg').resize(size,size).png().toBuffer();
+            const foreground = await sharp('public/brand/baro-mark-light.svg').resize(Math.round(size * 0.72),Math.round(size * 0.72)).png().toBuffer();
+            const png = await sharp({create:{width:size,height:size,channels:4,background:'#FF5B2E'}}).composite([{input:foreground,gravity:'centre'}]).png().toBuffer();
             await writeFile(`${res}/${dir}/ic_launcher.png`,png);
             await writeFile(`${res}/${dir}/ic_launcher_round.png`,png);
-            await writeFile(`${res}/${dir}/ic_launcher_foreground.png`,png);
+            await writeFile(`${res}/${dir}/ic_launcher_foreground.png`,foreground);
           }
           NODE
       - name: Set app version from package.json
