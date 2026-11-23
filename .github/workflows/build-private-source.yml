@@ -691,19 +691,53 @@ jobs:
           sed -i 's/<string name="app_name">[^<]*<\/string>/<string name="app_name">Baro POS<\/string>/' android/app/src/main/res/values/strings.xml || true
           node --input-type=module <<'NODE'
           import sharp from 'sharp';
-          import { readdir, writeFile } from 'node:fs/promises';
+          import { mkdir, readdir, writeFile } from 'node:fs/promises';
           const res = 'android/app/src/main/res';
-          const dirs = (await readdir(res, {withFileTypes:true})).filter(d => d.isDirectory() && /^mipmap-(mdpi|hdpi|xhdpi|xxhdpi|xxxhdpi)$/.test(d.name)).map(d => d.name);
-          const sizes = {mdpi:48,hdpi:72,xhdpi:96,xxhdpi:144,xxxhdpi:192};
+          const densities = {
+            mdpi: { legacy: 48, adaptive: 108 },
+            hdpi: { legacy: 72, adaptive: 162 },
+            xhdpi: { legacy: 96, adaptive: 216 },
+            xxhdpi: { legacy: 144, adaptive: 324 },
+            xxxhdpi: { legacy: 192, adaptive: 432 },
+          };
+          const dirs = (await readdir(res, { withFileTypes: true }))
+            .filter(entry => entry.isDirectory() && /^mipmap-(mdpi|hdpi|xhdpi|xxhdpi|xxxhdpi)$/.test(entry.name))
+            .map(entry => entry.name);
           for (const dir of dirs) {
-            const density = dir.replace('mipmap-','');
-            const size = sizes[density];
-            const foreground = await sharp('public/brand/baro-mark-light.svg').resize(Math.round(size * 0.72),Math.round(size * 0.72)).png().toBuffer();
-            const png = await sharp({create:{width:size,height:size,channels:4,background:'#FF5B2E'}}).composite([{input:foreground,gravity:'centre'}]).png().toBuffer();
-            await writeFile(`${res}/${dir}/ic_launcher.png`,png);
-            await writeFile(`${res}/${dir}/ic_launcher_round.png`,png);
-            await writeFile(`${res}/${dir}/ic_launcher_foreground.png`,foreground);
+            const density = dir.replace('mipmap-', '');
+            const { legacy, adaptive } = densities[density];
+            // Use the supplied official one-colour mark with the Brand Pack's
+            // adaptive-icon safe area (44.4% x 45.8% of the canvas).
+            const mark = await sharp('public/brand/baro-mark-black.svg')
+              .resize(Math.round(adaptive * 0.444), Math.round(adaptive * 0.458))
+              .png().toBuffer();
+            const foreground = await sharp({
+              create: { width: adaptive, height: adaptive, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
+            }).composite([{ input: mark, gravity: 'centre' }]).png().toBuffer();
+            const monochrome = await sharp(foreground).tint({ r: 0, g: 0, b: 0 }).png().toBuffer();
+            await writeFile(`${res}/${dir}/ic_launcher_foreground.png`, foreground);
+            await writeFile(`${res}/${dir}/ic_launcher_monochrome.png`, monochrome);
+            const legacyIcon = await sharp({ create: { width: legacy, height: legacy, channels: 4, background: '#FF5B2E' } })
+              .composite([{ input: await sharp(foreground).resize(legacy, legacy).png().toBuffer() }])
+              .png().toBuffer();
+            await writeFile(`${res}/${dir}/ic_launcher.png`, legacyIcon);
+            await writeFile(`${res}/${dir}/ic_launcher_round.png`, legacyIcon);
           }
+          const adaptiveDir = `${res}/mipmap-anydpi-v26`;
+          await mkdir(adaptiveDir, { recursive: true });
+          const adaptiveXml = `<?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+              <monochrome android:drawable="@mipmap/ic_launcher_monochrome"/>
+          </adaptive-icon>`;
+          await writeFile(`${adaptiveDir}/ic_launcher.xml`, adaptiveXml);
+          await writeFile(`${adaptiveDir}/ic_launcher_round.xml`, adaptiveXml);
+          const valuesDir = `${res}/values`;
+          await mkdir(valuesDir, { recursive: true });
+          await writeFile(`${valuesDir}/ic_launcher_background.xml`,
+            `<?xml version="1.0" encoding="utf-8"?>
+          <resources><color name="ic_launcher_background">#FF5B2E</color></resources>`);
           NODE
       - name: Set app version from package.json
         run: |
