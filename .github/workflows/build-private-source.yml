@@ -709,7 +709,7 @@ jobs:
             // The Brand Pack's Android foreground uses a generous adaptive safe
             // zone: 44.4% width x 45.8% height, not the old oversized 72% mark.
             const mark = await sharp('public/brand/baro-mark-black.svg')
-              .resize(Math.round(adaptive * 0.444), Math.round(adaptive * 0.458))
+              .resize({ width: Math.round(adaptive * 0.444), height: Math.round(adaptive * 0.458), fit: 'fill' })
               .png().toBuffer();
             const foreground = await sharp({
               create: { width: adaptive, height: adaptive, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
