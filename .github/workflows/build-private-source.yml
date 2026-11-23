@@ -706,8 +706,8 @@ jobs:
           for (const dir of dirs) {
             const density = dir.replace('mipmap-', '');
             const { legacy, adaptive } = densities[density];
-            // Use the supplied official one-colour mark with the Brand Pack's
-            // adaptive-icon safe area (44.4% x 45.8% of the canvas).
+            // The Brand Pack's Android foreground uses a generous adaptive safe
+            // zone: 44.4% width x 45.8% height, not the old oversized 72% mark.
             const mark = await sharp('public/brand/baro-mark-black.svg')
               .resize(Math.round(adaptive * 0.444), Math.round(adaptive * 0.458))
               .png().toBuffer();
