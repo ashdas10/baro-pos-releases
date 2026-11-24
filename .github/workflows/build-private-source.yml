@@ -150,12 +150,39 @@ jobs:
               for (int redirects = 0; redirects <= 5; redirects++) {
                 Uri uri = Uri.parse(current.toString());
                 if (!isTrustedReleaseHost(uri)) throw new java.io.IOException("UPDATE_REDIRECT_REJECTED");
-                HttpURLConnection next = (HttpURLConnection) current.openConnection();
-                next.setConnectTimeout(connectTimeout);
-                next.setReadTimeout(readTimeout);
-                next.setInstanceFollowRedirects(false);
-                next.setRequestProperty("Accept", accept);
-                int status = next.getResponseCode();
+                HttpURLConnection next = null;
+                int status = -1;
+                java.io.IOException lastConnectionError = null;
+                // Retry only transient connection/response-read failures. Redirect-policy
+                // failures, HTTP errors, stream failures and checksum failures are not retried.
+                for (int attempt = 0; attempt < 3; attempt++) {
+                  try {
+                    next = (HttpURLConnection) current.openConnection();
+                    next.setConnectTimeout(connectTimeout);
+                    next.setReadTimeout(readTimeout);
+                    next.setInstanceFollowRedirects(false);
+                    next.setRequestProperty("Accept", accept);
+                    status = next.getResponseCode();
+                    lastConnectionError = null;
+                    break;
+                  } catch (java.io.IOException error) {
+                    // TLS trust/handshake and protocol failures are not transient network drops.
+                    if (error instanceof javax.net.ssl.SSLException || error instanceof java.net.ProtocolException) throw error;
+                    lastConnectionError = error;
+                    if (next != null) next.disconnect();
+                    next = null;
+                    if (attempt < 2) {
+                      try {
+                        Thread.sleep(500L * (attempt + 1));
+                      } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new java.io.IOException("UPDATE_RETRY_INTERRUPTED", interrupted);
+                      }
+                    }
+                  }
+                }
+                if (lastConnectionError != null) throw lastConnectionError;
+                if (next == null) throw new java.io.IOException("UPDATE_CONNECTION_FAILED");
                 if (status >= 300 && status < 400) {
                   String location = next.getHeaderField("Location");
                   next.disconnect();
@@ -264,9 +291,12 @@ jobs:
                 HttpURLConnection connection = null;
                 File temporary = new File(getContext().getCacheDir(), "baro-pos-update.apk.part");
                 File apk = new File(getContext().getCacheDir(), "baro-pos-update.apk");
+                String stage = "START";
                 try {
                   temporary.delete();
+                  stage = "CONNECT_AND_VALIDATE_REDIRECTS";
                   connection = openTrustedConnection(url, "application/vnd.android.package-archive, application/octet-stream", 20000, 45000);
+                  stage = "CHECK_HTTP_RESPONSE";
                   int status = connection.getResponseCode();
                   if (status != HttpURLConnection.HTTP_OK) throw new java.io.IOException("APK_DOWNLOAD_HTTP_" + status);
                   Uri finalUri = Uri.parse(connection.getURL().toString());
@@ -279,6 +309,7 @@ jobs:
                   }
                   String contentType = connection.getContentType();
                   if (connection.getContentLengthLong() > MAX_APK_BYTES) throw new java.io.IOException("APK_FILE_TOO_LARGE");
+                  stage = "STREAM_APK_TO_TEMP_FILE";
                   MessageDigest digest = MessageDigest.getInstance("SHA-256");
                   long total = 0;
                   try (InputStream input = connection.getInputStream();
@@ -294,13 +325,16 @@ jobs:
                     output.flush();
                     output.getFD().sync();
                   }
+                  stage = "VERIFY_SIZE_AND_SHA256";
                   if (total < 1024 * 1024) throw new java.io.IOException("APK_DOWNLOAD_TOO_SMALL");
                   StringBuilder actual = new StringBuilder();
                   for (byte value : digest.digest()) actual.append(String.format(java.util.Locale.US, "%02x", value));
                   if (!actual.toString().equalsIgnoreCase(expected)) throw new java.io.IOException("APK_CHECKSUM_MISMATCH");
+                  stage = "FINALIZE_VERIFIED_APK_CACHE";
                   if (apk.exists() && !apk.delete()) throw new java.io.IOException("APK_CACHE_CLEANUP_FAILED");
                   if (!temporary.renameTo(apk)) throw new java.io.IOException("APK_CACHE_FINALIZE_FAILED");
 
+                  stage = "OPEN_ANDROID_INSTALLER";
                   Uri apkUri = FileProvider.getUriForFile(getContext(),
                       getContext().getPackageName() + ".fileprovider", apk);
                   Intent install = new Intent(Intent.ACTION_INSTALL_PACKAGE);
@@ -321,7 +355,7 @@ jobs:
                   });
                 } catch (Exception error) {
                   temporary.delete();
-                  call.reject("UPDATE_INSTALL_FAILED: " + error.getMessage(), error);
+                  call.reject("UPDATE_INSTALL_FAILED [" + stage + "]: " + error.getMessage(), error);
                 } finally {
                   if (connection != null) connection.disconnect();
                 }
@@ -481,12 +515,39 @@ jobs:
               for (int redirects = 0; redirects <= 5; redirects++) {
                 Uri uri = Uri.parse(current.toString());
                 if (!isTrustedReleaseHost(uri)) throw new java.io.IOException("UPDATE_REDIRECT_REJECTED");
-                HttpURLConnection next = (HttpURLConnection) current.openConnection();
-                next.setConnectTimeout(connectTimeout);
-                next.setReadTimeout(readTimeout);
-                next.setInstanceFollowRedirects(false);
-                next.setRequestProperty("Accept", accept);
-                int status = next.getResponseCode();
+                HttpURLConnection next = null;
+                int status = -1;
+                java.io.IOException lastConnectionError = null;
+                // Retry only transient connection/response-read failures. Redirect-policy
+                // failures, HTTP errors, stream failures and checksum failures are not retried.
+                for (int attempt = 0; attempt < 3; attempt++) {
+                  try {
+                    next = (HttpURLConnection) current.openConnection();
+                    next.setConnectTimeout(connectTimeout);
+                    next.setReadTimeout(readTimeout);
+                    next.setInstanceFollowRedirects(false);
+                    next.setRequestProperty("Accept", accept);
+                    status = next.getResponseCode();
+                    lastConnectionError = null;
+                    break;
+                  } catch (java.io.IOException error) {
+                    // TLS trust/handshake and protocol failures are not transient network drops.
+                    if (error instanceof javax.net.ssl.SSLException || error instanceof java.net.ProtocolException) throw error;
+                    lastConnectionError = error;
+                    if (next != null) next.disconnect();
+                    next = null;
+                    if (attempt < 2) {
+                      try {
+                        Thread.sleep(500L * (attempt + 1));
+                      } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new java.io.IOException("UPDATE_RETRY_INTERRUPTED", interrupted);
+                      }
+                    }
+                  }
+                }
+                if (lastConnectionError != null) throw lastConnectionError;
+                if (next == null) throw new java.io.IOException("UPDATE_CONNECTION_FAILED");
                 if (status >= 300 && status < 400) {
                   String location = next.getHeaderField("Location");
                   next.disconnect();
@@ -595,9 +656,12 @@ jobs:
                 HttpURLConnection connection = null;
                 File temporary = new File(getContext().getCacheDir(), "baro-pos-update.apk.part");
                 File apk = new File(getContext().getCacheDir(), "baro-pos-update.apk");
+                String stage = "START";
                 try {
                   temporary.delete();
+                  stage = "CONNECT_AND_VALIDATE_REDIRECTS";
                   connection = openTrustedConnection(url, "application/vnd.android.package-archive, application/octet-stream", 20000, 45000);
+                  stage = "CHECK_HTTP_RESPONSE";
                   int status = connection.getResponseCode();
                   if (status != HttpURLConnection.HTTP_OK) throw new java.io.IOException("APK_DOWNLOAD_HTTP_" + status);
                   Uri finalUri = Uri.parse(connection.getURL().toString());
@@ -610,6 +674,7 @@ jobs:
                   }
                   String contentType = connection.getContentType();
                   if (connection.getContentLengthLong() > MAX_APK_BYTES) throw new java.io.IOException("APK_FILE_TOO_LARGE");
+                  stage = "STREAM_APK_TO_TEMP_FILE";
                   MessageDigest digest = MessageDigest.getInstance("SHA-256");
                   long total = 0;
                   try (InputStream input = connection.getInputStream();
@@ -625,13 +690,16 @@ jobs:
                     output.flush();
                     output.getFD().sync();
                   }
+                  stage = "VERIFY_SIZE_AND_SHA256";
                   if (total < 1024 * 1024) throw new java.io.IOException("APK_DOWNLOAD_TOO_SMALL");
                   StringBuilder actual = new StringBuilder();
                   for (byte value : digest.digest()) actual.append(String.format(java.util.Locale.US, "%02x", value));
                   if (!actual.toString().equalsIgnoreCase(expected)) throw new java.io.IOException("APK_CHECKSUM_MISMATCH");
+                  stage = "FINALIZE_VERIFIED_APK_CACHE";
                   if (apk.exists() && !apk.delete()) throw new java.io.IOException("APK_CACHE_CLEANUP_FAILED");
                   if (!temporary.renameTo(apk)) throw new java.io.IOException("APK_CACHE_FINALIZE_FAILED");
 
+                  stage = "OPEN_ANDROID_INSTALLER";
                   Uri apkUri = FileProvider.getUriForFile(getContext(),
                       getContext().getPackageName() + ".fileprovider", apk);
                   Intent install = new Intent(Intent.ACTION_INSTALL_PACKAGE);
@@ -652,7 +720,7 @@ jobs:
                   });
                 } catch (Exception error) {
                   temporary.delete();
-                  call.reject("UPDATE_INSTALL_FAILED: " + error.getMessage(), error);
+                  call.reject("UPDATE_INSTALL_FAILED [" + stage + "]: " + error.getMessage(), error);
                 } finally {
                   if (connection != null) connection.disconnect();
                 }
@@ -851,7 +919,7 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
           test -n "$AAPT"
           test -n "$APKSIGNER"
-          for BASE_VERSION in 1.4.0 1.4.1; do
+          for BASE_VERSION in 1.4.0 1.4.1 1.4.2 1.4.4; do
             BASE_APK="Baro-POS-$BASE_VERSION.baseline.apk"
             curl --fail --location --retry 3 --silent --show-error \
               "https://github.com/ashdas10/baro-pos-releases/releases/download/v$BASE_VERSION/Baro-POS-$BASE_VERSION.apk" \
