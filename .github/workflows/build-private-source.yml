@@ -103,7 +103,7 @@ jobs:
       - name: Generate app icons
         run: |
           mkdir -p assets
-          node --input-type=module -e "import sharp from 'sharp'; await sharp('public/brand/baro-mark-light.svg').resize(1024,1024).png().toFile('assets/icon-only.png'); await sharp({create:{width:2732,height:2732,channels:4,background:'#14110F'}}).composite([{input:await sharp('public/brand/baro-mark-dark.svg').resize(1128,1128).png().toBuffer(),gravity:'centre'}]).png().toFile('assets/splash.png')"
+          node --input-type=module -e "import sharp from 'sharp'; await sharp('public/brand/baro-mark-light.svg').resize(1024,1024).png().toFile('assets/icon-only.png'); await sharp({create:{width:2732,height:2732,channels:4,background:'#14110F'}}).composite([{input:await sharp('public/brand/baro-mark-dark.svg').resize(1580,1580).png().toBuffer(),gravity:'centre'}]).png().toFile('assets/splash.png')"
           npx capacitor-assets generate --android --iconBackgroundColor '#FF5B2E' --splashBackgroundColor '#14110F'
       - name: Sync Capacitor Android 8
         run: npx cap sync android
@@ -434,7 +434,7 @@ jobs:
       - name: Generate app icons
         run: |
           mkdir -p assets
-          node --input-type=module -e "import sharp from 'sharp'; await sharp('public/brand/baro-mark-light.svg').resize(1024,1024).png().toFile('assets/icon-only.png'); await sharp({create:{width:2732,height:2732,channels:4,background:'#14110F'}}).composite([{input:await sharp('public/brand/baro-mark-dark.svg').resize(1128,1128).png().toBuffer(),gravity:'centre'}]).png().toFile('assets/splash.png')"
+          node --input-type=module -e "import sharp from 'sharp'; await sharp('public/brand/baro-mark-light.svg').resize(1024,1024).png().toFile('assets/icon-only.png'); await sharp({create:{width:2732,height:2732,channels:4,background:'#14110F'}}).composite([{input:await sharp('public/brand/baro-mark-dark.svg').resize(1580,1580).png().toBuffer(),gravity:'centre'}]).png().toFile('assets/splash.png')"
           npx capacitor-assets generate --android --iconBackgroundColor '#FF5B2E' --splashBackgroundColor '#14110F'
       - name: Sync packaged app
         run: npx cap sync android
