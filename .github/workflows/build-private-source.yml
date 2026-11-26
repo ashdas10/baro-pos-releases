@@ -933,7 +933,7 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
           test -n "$AAPT"
           test -n "$APKSIGNER"
-          for BASE_VERSION in 1.4.0 1.4.1 1.4.2 1.4.4; do
+          for BASE_VERSION in 1.4.0 1.4.1 1.4.2 1.4.4 1.4.5; do
             BASE_APK="Baro-POS-$BASE_VERSION.baseline.apk"
             curl --fail --location --retry 3 --silent --show-error \
               "https://github.com/ashdas10/baro-pos-releases/releases/download/v$BASE_VERSION/Baro-POS-$BASE_VERSION.apk" \
@@ -1005,6 +1005,7 @@ jobs:
         run: |
           SHA256="$(sha256sum "Baro-POS-$BARO_VERSION.apk" | cut -d ' ' -f 1)"
           case "$BARO_VERSION" in
+            1.4.6) RELEASE_NOTES="See operating mode and store status together at checkout. Review more ticket lines with compact quantity, order and discount controls. Find settings by category, with separate backup, security and app information pages. Updated menu and report controls follow the selected theme. Open the BARO website from the sidebar or About BARO." ;;
             1.4.5) RELEASE_NOTES="Refined official BARO branding and footer lockup; theme-aware Appearance controls and Android adaptive/monochrome launcher icon; improved landscape checkout on phones and tablets with a larger independently scrolling item list; corrected Android system-bar insets; masked section PIN confirmation dialogs; disabled Android system backup for device-bound security credentials while retaining encrypted in-app backup." ;;
             1.4.4) RELEASE_NOTES="Official BARO brand identity across the app; updated launcher icon and splash branding; dedicated Appearance settings with theme and accent presets; consistent BARO navigation styling; official 58mm and 80mm thermal receipt footer artwork. Merchant identity, POS checkout layout, billing, inventory, finance and backup workflows preserved." ;;
             1.4.3.1) RELEASE_NOTES="Android phone portrait system-bar spacing and short-landscape POS checkout layout corrections; distinct patch build identity for device verification." ;;
@@ -1055,6 +1056,16 @@ jobs:
               raise SystemExit("Signed APK is missing or unexpectedly small.")
           manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
           digest = hashlib.sha256(apk.read_bytes()).hexdigest()
+          generic = Path("Baro-POS.apk")
+          if hashlib.sha256(generic.read_bytes()).hexdigest() != digest:
+              raise SystemExit("Website APK differs from the verified version-specific APK.")
+          checksum = Path(f"{apk.name}.sha256").read_text(encoding="utf-8").split()
+          if checksum != [digest, apk.name]:
+              raise SystemExit("Published checksum file does not match the signed APK.")
+          identity = Path(f"Baro-POS-{version}.badging.txt").read_text(encoding="utf-8").splitlines()[0]
+          for field, value in (("name", "com.baro.pos"), ("versionCode", str(version_code)), ("versionName", version)):
+              if f" {field}='{value}'" not in identity:
+                  raise SystemExit(f"Signed Android package has unexpected {field}.")
           expected = {
               "version": version,
               "versionCode": version_code,
