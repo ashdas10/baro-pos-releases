@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  DEVELOPMENT_SOURCE_SHA: 5f61c714bf54d29a70bbb6aad7c1dfb65eb02093
+  DEVELOPMENT_SOURCE_SHA: 8b8f370b2d5f051f0555ebe6b0c194b4ff112eea
 
 jobs:
   validate:
@@ -428,6 +428,25 @@ jobs:
           ./gradlew assembleDebug
       - name: Verify debug APK exists
         run: test -s android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Exercise installed app on a disposable Android 35 emulator
+        if: ${{ github.event_name == 'push' }}
+        timeout-minutes: 14
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          sdkmanager --install "system-images;android-35;google_apis;x86_64"
+          echo no | avdmanager create avd -n baro-validation -k "system-images;android-35;google_apis;x86_64"
+          emulator -avd baro-validation -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/baro-emulator.log" 2>&1 &
+          emulator_pid=$!
+          trap 'kill "$emulator_pid" 2>/dev/null || true' EXIT
+          timeout 300 adb wait-for-device
+          timeout 300 bash -c 'until [[ "$(adb shell getprop sys.boot_completed | tr -d "\r")" == 1 ]]; do sleep 2; done'
+          adb shell input keyevent KEYCODE_WAKEUP
+          adb shell wm dismiss-keyguard
+          adb install android/app/build/outputs/apk/debug/app-debug.apk
+          node scripts/check-android-device.mjs
       - name: Create debug APK checksum
         run: sha256sum android/app/build/outputs/apk/debug/app-debug.apk > android/app/build/outputs/apk/debug/app-debug.apk.sha256
       - name: Upload unsigned Android debug APK
