@@ -2,8 +2,15 @@ name: Build Baro POS Android Release APK
 # Manual signed-APK release pipeline for the private BARO POS source repository.
 
 on:
+  push:
+    branches: [chore/1.4.7-release-notes]
+    paths: [.github/workflows/build-private-source.yml]
   workflow_dispatch:
     inputs:
+      validation_only:
+        description: "Run regression tests and compile Android without signing or releasing"
+        type: boolean
+        default: false
       source_sha:
         description: "Exact 40-character commit SHA from the private BARO POS repository"
         required: true
@@ -16,9 +23,11 @@ concurrency:
   group: baro-pos-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  DEVELOPMENT_SOURCE_SHA: bb86f8dd16806ca59d31876730ea676fe09b541c
+
 jobs:
   validate:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -26,7 +35,7 @@ jobs:
     steps:
       - name: Validate private source commit SHA
         env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_SHA: ${{ github.event_name == 'push' && env.DEVELOPMENT_SOURCE_SHA || inputs.source_sha }}
         run: |
           if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "source_sha must be an exact 40-character lowercase commit SHA."
@@ -36,7 +45,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ashdas10/baro-pos
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ github.event_name == 'push' && env.DEVELOPMENT_SOURCE_SHA || inputs.source_sha }}
           token: ${{ secrets.BARO_SOURCE_READ_TOKEN }}
           persist-credentials: false
       - name: Verify and extract official BARO web assets
@@ -62,7 +71,6 @@ jobs:
 
   android-validation:
     needs: validate
-    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -70,7 +78,7 @@ jobs:
     steps:
       - name: Validate private source commit SHA
         env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_SHA: ${{ github.event_name == 'push' && env.DEVELOPMENT_SOURCE_SHA || inputs.source_sha }}
         run: |
           if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "source_sha must be an exact 40-character lowercase commit SHA."
@@ -80,7 +88,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ashdas10/baro-pos
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ github.event_name == 'push' && env.DEVELOPMENT_SOURCE_SHA || inputs.source_sha }}
           token: ${{ secrets.BARO_SOURCE_READ_TOKEN }}
           persist-credentials: false
       - name: Verify and extract official BARO web assets
@@ -417,6 +425,7 @@ jobs:
       - name: Create debug APK checksum
         run: sha256sum android/app/build/outputs/apk/debug/app-debug.apk > android/app/build/outputs/apk/debug/app-debug.apk.sha256
       - name: Upload unsigned Android debug APK
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.validation_only }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: baro-pos-android-debug-${{ github.sha }}
@@ -428,7 +437,7 @@ jobs:
 
   build-apk:
     needs: [validate, android-validation]
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.validation_only }}
     environment:
       name: android-release
     permissions:
