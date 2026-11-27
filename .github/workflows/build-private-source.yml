@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  DEVELOPMENT_SOURCE_SHA: bb86f8dd16806ca59d31876730ea676fe09b541c
+  DEVELOPMENT_SOURCE_SHA: 5f61c714bf54d29a70bbb6aad7c1dfb65eb02093
 
 jobs:
   validate:
@@ -68,6 +68,12 @@ jobs:
         run: npx tsc --noEmit
       - name: Build web assets
         run: npm run build
+
+      - name: Verify development checkout layout and contrast in Chrome
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/baro-browser" --ignore-scripts --no-save --no-audit --no-fund playwright-core@1.56.1
+          NODE_PATH="$RUNNER_TEMP/baro-browser/node_modules" node scripts/check-pos-layout.cjs
 
   android-validation:
     needs: validate
