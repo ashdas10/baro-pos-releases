@@ -933,7 +933,7 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
           test -n "$AAPT"
           test -n "$APKSIGNER"
-          for BASE_VERSION in 1.4.0 1.4.1 1.4.2 1.4.4 1.4.5; do
+          for BASE_VERSION in 1.4.0 1.4.1 1.4.2 1.4.4 1.4.5 1.4.6; do
             BASE_APK="Baro-POS-$BASE_VERSION.baseline.apk"
             curl --fail --location --retry 3 --silent --show-error \
               "https://github.com/ashdas10/baro-pos-releases/releases/download/v$BASE_VERSION/Baro-POS-$BASE_VERSION.apk" \
@@ -1030,16 +1030,28 @@ jobs:
             1.2.20) RELEASE_NOTES="Day-by-day sales reporting with zero-sales dates; drafts and voided bills excluded from reporting." ;;
             *) RELEASE_NOTES="Bug fixes, usability improvements, and reliability updates." ;;
           esac
-          cat > latest.json <<EOF
-          {
-            "version": "$BARO_VERSION",
-            "versionCode": $BARO_VERSION_CODE,
-            "packageName": "com.baro.pos",
-            "apkUrl": "https://github.com/ashdas10/baro-pos-releases/releases/download/v$BARO_VERSION/Baro-POS.apk",
-            "sha256": "$SHA256",
-            "releaseNotes": "$RELEASE_NOTES"
+          # Use the same Markdown notes for the in-app update and GitHub release.
+          NOTES_FILE="docs/releases/$BARO_VERSION.md"
+          if [[ -f "$NOTES_FILE" ]]; then
+            RELEASE_NOTES="$(cat "$NOTES_FILE")"
+          fi
+          export SHA256 RELEASE_NOTES
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          version = os.environ["BARO_VERSION"]
+          manifest = {
+              "version": version,
+              "versionCode": int(os.environ["BARO_VERSION_CODE"]),
+              "packageName": "com.baro.pos",
+              "apkUrl": f"https://github.com/ashdas10/baro-pos-releases/releases/download/v{version}/Baro-POS.apk",
+              "sha256": os.environ["SHA256"],
+              "releaseNotes": os.environ["RELEASE_NOTES"],
           }
-          EOF
+          Path("latest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
       - name: Validate update manifest
         run: |
           python - <<'PY'
