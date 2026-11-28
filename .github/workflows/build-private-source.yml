@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  DEVELOPMENT_SOURCE_SHA: 44141a6e177d801bd1b50d8d11ed9bebca031803
+  DEVELOPMENT_SOURCE_SHA: 410c8ec169eb313276ac8089e2fe58133149b3db
 
 jobs:
   validate:
@@ -433,29 +433,7 @@ jobs:
         timeout-minutes: 14
         shell: bash
         run: |
-          set -euo pipefail
-          export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
-          sdkmanager --install "system-images;android-35;google_apis;x86_64"
-          export ANDROID_AVD_HOME="$RUNNER_TEMP/baro-avds"
-          mkdir -p "$ANDROID_AVD_HOME"
-          echo no | avdmanager create avd -n baro-validation -k "system-images;android-35;google_apis;x86_64"
-          echo "disk.dataPartition.size=1024M" >> "$ANDROID_AVD_HOME/baro-validation.avd/config.ini"
-          df -h "$HOME"
-          emulator -partition-size 1024 -no-metrics -avd baro-validation -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/baro-emulator.log" 2>&1 &
-          emulator_pid=$!
-          trap 'rc=$?; if (( rc != 0 )); then tail -80 "$RUNNER_TEMP/baro-emulator.log"; fi; kill "$emulator_pid" 2>/dev/null || true' EXIT
-          for attempt in {1..90}; do
-            kill -0 "$emulator_pid" || { echo "Emulator exited during startup"; exit 1; }
-            if adb get-state 2>/dev/null | grep -qx device; then break; fi
-            sleep 2
-          done
-          adb get-state
-          timeout 300 bash -c 'until [[ "$(adb shell getprop sys.boot_completed | tr -d "\r")" == 1 ]]; do sleep 2; done'
-          adb shell input keyevent KEYCODE_WAKEUP
-          adb shell wm dismiss-keyguard
-          adb install android/app/build/outputs/apk/debug/app-debug.apk
-          node scripts/check-android-device.mjs
+          bash scripts/with-android-emulator.sh bash -c 'adb install android/app/build/outputs/apk/debug/app-debug.apk && node scripts/check-android-device.mjs'
       - name: Create debug APK checksum
         run: sha256sum android/app/build/outputs/apk/debug/app-debug.apk > android/app/build/outputs/apk/debug/app-debug.apk.sha256
       - name: Upload unsigned Android debug APK
@@ -1142,6 +1120,10 @@ jobs:
           path: latest.json
           if-no-files-found: error
           retention-days: 14
+      - name: Verify signed upgrade from the published v1.4.6 APK
+        if: ${{ env.BARO_VERSION == '1.4.7' }}
+        timeout-minutes: 12
+        run: bash scripts/with-android-emulator.sh bash scripts/check-signed-upgrade.sh "Baro-POS-$BARO_VERSION.apk"
       - name: Create draft GitHub release for final review
         env:
           GH_TOKEN: ${{ github.token }}
