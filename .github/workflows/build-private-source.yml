@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  DEVELOPMENT_SOURCE_SHA: 656ec897bcdd8f6811df7c1cadcdc807c27a52ca
+  DEVELOPMENT_SOURCE_SHA: a80dbd1012def9c9a6210803c4af2d51a5365838
 
 jobs:
   validate:
