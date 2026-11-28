@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  DEVELOPMENT_SOURCE_SHA: 879dcf4634815a9fbc961f2bb26e8ad05886ca3a
+  DEVELOPMENT_SOURCE_SHA: da85262c8b3f60f4a9335be00e9f7fad6df06116
 
 jobs:
   validate:
@@ -437,8 +437,10 @@ jobs:
           export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
           sudo setfacl -m "u:$(id -un):rw" /dev/kvm
           sdkmanager --install "system-images;android-35;google_apis;x86_64"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/baro-avds"
+          mkdir -p "$ANDROID_AVD_HOME"
           echo no | avdmanager create avd -n baro-validation -k "system-images;android-35;google_apis;x86_64"
-          echo "disk.dataPartition.size=1024M" >> "$HOME/.android/avd/baro-validation.avd/config.ini"
+          echo "disk.dataPartition.size=1024M" >> "$ANDROID_AVD_HOME/baro-validation.avd/config.ini"
           df -h "$HOME"
           emulator -partition-size 1024 -no-metrics -avd baro-validation -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/baro-emulator.log" 2>&1 &
           emulator_pid=$!
