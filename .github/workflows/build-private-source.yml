@@ -1111,6 +1111,13 @@ jobs:
                   raise SystemExit(f"Update manifest mismatch for {key}.")
           if not isinstance(manifest.get("releaseNotes"), str) or not manifest["releaseNotes"].strip():
               raise SystemExit("Update manifest release notes are missing.")
+          if version == "1.4.7":
+              notes = Path(f"docs/releases/{version}.md").read_text(encoding="utf-8").rstrip("\n")
+              headings = [line for line in notes.splitlines() if line.startswith("## ")]
+              if headings != ["## New Features", "## Improvements", "## Bug Fixes"]:
+                  raise SystemExit("Release notes must use the three approved categories in order.")
+              if notes != manifest["releaseNotes"]:
+                  raise SystemExit("Update manifest release notes differ from the versioned source notes.")
           print(f"Validated latest.json for Baro POS {version}; APK SHA-256 {digest}.")
           PY
       - name: Upload validated update manifest artifact
@@ -1136,8 +1143,6 @@ jobs:
           from pathlib import Path
           manifest = json.loads(Path("latest.json").read_text(encoding="utf-8"))
           print(manifest["releaseNotes"])
-          print()
-          print("This is a draft release pending final device installation and update-path verification.")
           PY
           if gh release view "$TAG" >/dev/null 2>&1; then
             IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
